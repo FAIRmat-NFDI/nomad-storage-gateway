@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-
 	"time"
 
 	"github.com/knadh/koanf/parsers/yaml"
@@ -31,7 +30,7 @@ type SeaweedFSConfig struct {
 	S3AccessKey string `json:"s3_access_key"`
 	S3SecretKey string `json:"s3_secret_key"`
 
-	// (Optional) Filer gRPC address for direct metadata lookup
+	// Filer gRPC address for direct metadata lookup
 	FilerEndpoint string `json:"filer_endpoint"` // e.g. "seaweedfs-filer:18888"
 }
 
@@ -72,6 +71,10 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("seaweedfs.s3_secret_key is required"))
 	}
 
+	if c.SeaweedFS.FilerEndpoint == "" {
+		errs = append(errs, errors.New("seaweedfs.filer_endpoint is required"))
+	}
+
 	return errors.Join(errs...)
 }
 
@@ -98,13 +101,16 @@ func Load(path string) (Config, error) {
 	var cfg Config
 
 	if err := k.UnmarshalWithConf("", &cfg, koanf.UnmarshalConf{Tag: "json"}); err != nil {
-		return Config{}, fmt.Errorf("decode config %w", err)
+		return Config{}, fmt.Errorf("decode config: %w", err)
+	}
+
+	if cfg.Port == 0 {
+		cfg.Port = 3333
 	}
 
 	if err := cfg.Validate(); err != nil {
-		return Config{}, fmt.Errorf("invalid config %w", err)
+		return Config{}, fmt.Errorf("invalid config: %w", err)
 	}
 
 	return cfg, nil
-
 }

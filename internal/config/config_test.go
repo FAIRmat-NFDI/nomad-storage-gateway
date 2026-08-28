@@ -17,6 +17,7 @@ seaweedfs:
   s3_bucket: nomad-public
   s3_access_key: access_key
   s3_secret_key: secret_key
+  filer_endpoint: seaweedfs-filer:18888
 `
 
 	if err := os.WriteFile(path, []byte(configYAML), 0600); err != nil {
@@ -55,6 +56,7 @@ seaweedfs:
   s3_bucket: nomad-public
   s3_access_key: file-key
   s3_secret_key: file-secret
+  filer_endpoint: seaweedfs-filer:18888
 `
 
 	if err := os.WriteFile(path, []byte(configYAML), 0600); err != nil {

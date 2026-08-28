@@ -1,21 +1,22 @@
-package internal
+package server
 
 import (
 	"fmt"
 	"net/http"
 
 	config "github.com/FAIRmat-NFDI/nomad-storage-gateway/internal/config"
-	handlers "github.com/FAIRmat-NFDI/nomad-storage-gateway/internal/handlers"
+	seaweedfs "github.com/FAIRmat-NFDI/nomad-storage-gateway/internal/seaweedfs"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
 
 type Server struct {
-	cfg config.Config
+	cfg         config.Config
+	filerClient *seaweedfs.FilerClient
 }
 
-func NewRouter(cfg config.Config) http.Handler {
-	s := &Server{cfg: cfg}
+func NewRouter(cfg config.Config, filerClient *seaweedfs.FilerClient) http.Handler {
+	s := &Server{cfg: cfg, filerClient: filerClient}
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -24,7 +25,7 @@ func NewRouter(cfg config.Config) http.Handler {
 	r.Use(middleware.Recoverer)
 
 	r.Get("/health", s.health)
-	r.Get("/zip", s.zip)
+	r.Get("/uploads/{upload_id}/*", s.zip)
 
 	return r
 }
@@ -33,14 +34,10 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ok"))
 }
 
-func (s *Server) zip(w http.ResponseWriter, r *http.Request) {
-	handlers.ZipHandler(w, r, s.cfg)
-}
-
-func Run(cfg config.Config) error {
+func Run(cfg config.Config, filerClient *seaweedfs.FilerClient) error {
 	httpServer := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Port),
-		Handler:      NewRouter(cfg),
+		Handler:      NewRouter(cfg, filerClient),
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  cfg.IdleTimeout,
