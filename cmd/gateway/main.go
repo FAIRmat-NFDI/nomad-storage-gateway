@@ -1,7 +1,7 @@
 package main
 
-import "fmt"
+import server "github.com/FAIRmat-NFDI/nomad-storage-gateway/internal/server"
 
 func main() {
-	fmt.Println("nomad-storage-gateway")
+	server.Server()
 }
