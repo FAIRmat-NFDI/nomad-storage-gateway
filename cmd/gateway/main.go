@@ -1,7 +1,16 @@
 package main
 
-import server "github.com/FAIRmat-NFDI/nomad-storage-gateway/internal/server"
+import (
+	"log"
+
+	config "github.com/FAIRmat-NFDI/nomad-storage-gateway/internal/config"
+	server "github.com/FAIRmat-NFDI/nomad-storage-gateway/internal/server"
+)
 
 func main() {
-	server.Server()
+	cfg, err := config.Load("config.yaml")
+	if err != nil {
+		log.Fatal(err)
+	}
+	server.Server(cfg)
 }
