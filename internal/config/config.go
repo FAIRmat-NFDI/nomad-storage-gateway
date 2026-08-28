@@ -3,10 +3,12 @@ package internal
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"time"
 
 	"github.com/knadh/koanf/parsers/yaml"
+	"github.com/knadh/koanf/providers/env"
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
 )
@@ -78,6 +80,19 @@ func Load(path string) (Config, error) {
 
 	if err := k.Load(file.Provider(path), yaml.Parser()); err != nil {
 		return Config{}, fmt.Errorf("load config: %w", err)
+	}
+
+	// Environment variables override values from the config file.
+	if err := k.Load(env.Provider("NOMAD_", ".", func(key string) string {
+		key = strings.TrimPrefix(key, "NOMAD_")
+		key = strings.ToLower(key)
+
+		// Double underscore represents nesting.
+		// NOMAD_SEAWEEDFS__S3_ENDPOINT
+		// becomes seaweedfs.s3_endpoint.
+		return strings.ReplaceAll(key, "__", ".")
+	}), nil); err != nil {
+		return Config{}, fmt.Errorf("load environment: %w", err)
 	}
 
 	var cfg Config
