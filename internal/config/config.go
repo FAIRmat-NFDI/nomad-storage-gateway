@@ -12,8 +12,8 @@ import (
 	"github.com/knadh/koanf/v2"
 )
 
-// CloudProvider defines an external S3-compatible cloud storage target (MPCDF, Wasabi, AWS, etc.)
-type CloudProvider struct {
+// ObjectStore defines an external S3-compatible cloud storage target (MPCDF, Wasabi, AWS, etc.)
+type ObjectStore struct {
 	Type      string `json:"type"`     // "s3"
 	Endpoint  string `json:"endpoint"` // "https://s3.eu-central-1.wasabisys.com"
 	Region    string `json:"region"`   // "eu-central-1"
@@ -45,7 +45,7 @@ type Config struct {
 	SeaweedFS SeaweedFSConfig `json:"seaweedfs"`
 
 	// External cloud storage targets for presigned 307 redirects
-	CloudProviders map[string]CloudProvider `json:"cloud_providers"`
+	Providers map[string]ObjectStore `json:"providers"`
 }
 
 func (c Config) Validate() error {

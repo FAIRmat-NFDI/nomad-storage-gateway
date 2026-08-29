@@ -1,0 +1,12 @@
+port: 3333
+
+seaweedfs:
+  s3_endpoint: http://localhost:8333
+  s3_bucket: nomad-public
+  filer_endpoint: localhost:18888
+
+providers:
+  cloud1:
+    type: s3
+    endpoint: http://localhost:9000
+    bucket: nomad-published-cloud

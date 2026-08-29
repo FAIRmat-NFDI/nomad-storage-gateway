@@ -19,9 +19,9 @@ type FilerClient struct {
 
 func NewFilerClient(cfg config.Config, logger *slog.Logger) (*FilerClient, error) {
 	kacp := keepalive.ClientParameters{
-		Time:                10 * time.Second, // Send ping every 10s if idle
-		Timeout:             2 * time.Second,  // Wait 2s for ping ack
-		PermitWithoutStream: true,             // Keep-alive even when no active RPCs
+		Time:                1 * time.Minute, // Send ping every 1m
+		Timeout:             5 * time.Second, // Wait 5s for ping ack
+		PermitWithoutStream: false,           // Do not ping when connection is idle
 	}
 	conn, err := grpc.NewClient(
 		cfg.SeaweedFS.FilerEndpoint,

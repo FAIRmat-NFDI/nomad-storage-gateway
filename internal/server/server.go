@@ -1,11 +1,14 @@
 package server
 
 import (
+	"context"
 	"fmt"
+	"maps"
 	"net/http"
 
 	config "github.com/FAIRmat-NFDI/nomad-storage-gateway/internal/config"
 	seaweedfs "github.com/FAIRmat-NFDI/nomad-storage-gateway/internal/seaweedfs"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
@@ -13,10 +16,32 @@ import (
 type Server struct {
 	cfg         config.Config
 	filerClient *seaweedfs.FilerClient
+	presigners  map[string]*s3.PresignClient
 }
 
-func NewRouter(cfg config.Config, filerClient *seaweedfs.FilerClient) http.Handler {
-	s := &Server{cfg: cfg, filerClient: filerClient}
+func NewRouter(cfg config.Config, filerClient *seaweedfs.FilerClient) (http.Handler, error) {
+	providers := maps.Clone(cfg.Providers)
+	ctx := context.Background()
+
+	providers["seaweedfs"] = config.ObjectStore{
+		Type:      "s3",
+		Endpoint:  cfg.SeaweedFS.S3Endpoint,
+		Bucket:    cfg.SeaweedFS.S3Bucket,
+		AccessKey: cfg.SeaweedFS.S3AccessKey,
+		SecretKey: cfg.SeaweedFS.S3SecretKey,
+	}
+
+	presigners := make(map[string]*s3.PresignClient)
+	for name, provider := range providers {
+		presigner, err := newPresigner(ctx, provider)
+		if err != nil {
+			return nil, fmt.Errorf("create presigner for %q: %w", name, err)
+		}
+		presigners[name] = presigner
+
+	}
+
+	s := &Server{cfg: cfg, filerClient: filerClient, presigners: presigners}
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -25,9 +50,10 @@ func NewRouter(cfg config.Config, filerClient *seaweedfs.FilerClient) http.Handl
 	r.Use(middleware.Recoverer)
 
 	r.Get("/health", s.health)
-	r.Get("/uploads/{upload_id}/*", s.zip)
+	r.Get("/zip/{upload_id}", s.zip)
+	r.Get("/zip/{upload_id}/*", s.zip)
 
-	return r
+	return r, nil
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -35,9 +61,13 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func Run(cfg config.Config, filerClient *seaweedfs.FilerClient) error {
+	router, err := NewRouter(cfg, filerClient)
+	if err != nil {
+		return fmt.Errorf("creating router: %w", err)
+	}
 	httpServer := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Port),
-		Handler:      NewRouter(cfg, filerClient),
+		Handler:      router,
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  cfg.IdleTimeout,
