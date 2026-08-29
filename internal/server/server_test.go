@@ -41,7 +41,16 @@ func TestNewRouterDoesNotMutateProviders(t *testing.T) {
 		t.Fatalf("NewRouter() error = %v", err)
 	}
 
-	if _, ok := cfg.Providers["seaweedfs"]; ok {
+	if _, ok := cfg.Providers[centralSeaweedFSProvider]; ok {
 		t.Fatal(`NewRouter() added the internal provider to cfg.Providers`)
+	}
+}
+
+func TestNewRouterRejectsReservedProviderName(t *testing.T) {
+	cfg := testConfig()
+	cfg.Providers[centralSeaweedFSProvider] = config.ObjectStore{}
+
+	if _, err := NewRouter(cfg, nil); err == nil {
+		t.Fatalf("NewRouter() error = nil, want reserved provider error")
 	}
 }

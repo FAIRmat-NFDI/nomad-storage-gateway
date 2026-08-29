@@ -19,14 +19,21 @@ type Server struct {
 	presigners  map[string]*s3.PresignClient
 }
 
+// centralSeaweedFSProvider is reserved for the gateway's internal SeaweedFS store.
+const centralSeaweedFSProvider = "central_seaweedfs"
+
 func NewRouter(cfg config.Config, filerClient filerLookupClient) (http.Handler, error) {
+	if _, ok := cfg.Providers[centralSeaweedFSProvider]; ok {
+		return nil, fmt.Errorf("provider name %q is reserved", centralSeaweedFSProvider)
+	}
+
 	providers := maps.Clone(cfg.Providers)
 	if providers == nil {
 		providers = make(map[string]config.ObjectStore)
 	}
 	ctx := context.Background()
 
-	providers["seaweedfs"] = config.ObjectStore{
+	providers[centralSeaweedFSProvider] = config.ObjectStore{
 		Type:      "s3",
 		Endpoint:  cfg.SeaweedFS.S3Endpoint,
 		Bucket:    cfg.SeaweedFS.S3Bucket,

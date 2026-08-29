@@ -70,7 +70,7 @@ func (s *Server) redirectUploadZip(w http.ResponseWriter, r *http.Request, filer
 	var storageName, bucket string
 	if remote == nil || remote.GetStorageName() == "" {
 		// Case 1. File stored on seaweedfs server
-		storageName = "seaweedfs"
+		storageName = centralSeaweedFSProvider
 		bucket = s.cfg.SeaweedFS.S3Bucket
 	} else {
 		// Case 2. File stored on a remote S3 Client

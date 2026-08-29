@@ -1,0 +1,54 @@
+services:
+  rustfs:
+    image: rustfs/rustfs@sha256:7d49faa88c045af618a9ca6e1a9dc5b6cb87ea6fb407a682d825478e4001b40c
+    restart: "no"
+    environment:
+      RUSTFS_ACCESS_KEY: cloudadmin
+      RUSTFS_SECRET_KEY: cloudpassword123
+      RUSTFS_ADDRESS: :9000
+      RUSTFS_CONSOLE_ADDRESS: :9001
+      RUSTFS_CONSOLE_ENABLE: "true"
+    ports:
+      - "${E2E_RUSTFS_S3_PORT:-9000}:9000"
+      - "${E2E_RUSTFS_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - rustfs_data:/data
+    command:
+      - server
+      - --address
+      - :9000
+      - --access-key
+      - cloudadmin
+      - --secret-key
+      - cloudpassword123
+      - --console-enable
+      - --console-address
+      - :9001
+      - /data
+
+  seaweedfs:
+    image: chrislusf/seaweedfs@sha256:43b768cd62b00d132439cda881b93fd1adebf1b315e996e794087743821d771d
+    restart: "no"
+    ports:
+      - "${E2E_SEAWEEDFS_S3_PORT:-8333}:8333"
+      - "${E2E_SEAWEEDFS_FILER_PORT:-18888}:18888"
+    volumes:
+      - seaweedfs_data:/data
+      - ./seaweedfs-s3-config.json:/etc/seaweedfs/s3_config.json:ro
+    command:
+      - server
+      - -dir=/data
+      - -master.port=9333
+      - -filer=true
+      - -filer.port=8888
+      - -volume=true
+      - -volume.port=8080
+      - -volume.max=100
+      - -volume.allowUntrustedRemoteEndpoints=true
+      - -s3=true
+      - -s3.port=8333
+      - -s3.config=/etc/seaweedfs/s3_config.json
+
+volumes:
+  rustfs_data:
+  seaweedfs_data:
