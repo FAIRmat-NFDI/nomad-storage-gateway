@@ -15,12 +15,15 @@ import (
 
 type Server struct {
 	cfg         config.Config
-	filerClient *seaweedfs.FilerClient
+	filerClient filerLookupClient
 	presigners  map[string]*s3.PresignClient
 }
 
-func NewRouter(cfg config.Config, filerClient *seaweedfs.FilerClient) (http.Handler, error) {
+func NewRouter(cfg config.Config, filerClient filerLookupClient) (http.Handler, error) {
 	providers := maps.Clone(cfg.Providers)
+	if providers == nil {
+		providers = make(map[string]config.ObjectStore)
+	}
 	ctx := context.Background()
 
 	providers["seaweedfs"] = config.ObjectStore{

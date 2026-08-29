@@ -1,20 +1,25 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"path"
 	"strings"
 
-	"github.com/FAIRmat-NFDI/nomad-storage-gateway/internal/seaweedfs"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/go-chi/chi/v5"
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
+	"google.golang.org/grpc"
 )
 
-func fileMetadata(uploadID string, fc *seaweedfs.FilerClient) (string, error) {
-	return "", nil
+type filerLookupClient interface {
+	LookupDirectoryEntry(
+		context.Context,
+		*filer_pb.LookupDirectoryEntryRequest,
+		...grpc.CallOption,
+	) (*filer_pb.LookupDirectoryEntryResponse, error)
 }
 
 func (s *Server) zip(w http.ResponseWriter, r *http.Request) {
@@ -25,14 +30,19 @@ func (s *Server) zip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filer_req := &filer_pb.LookupDirectoryEntryRequest{
+	filerReq := &filer_pb.LookupDirectoryEntryRequest{
 		// SeaweedFS Filer Path (for gRPC metadata check)
 		Directory: fmt.Sprintf("/buckets/%s/%s/%s", s.cfg.SeaweedFS.S3Bucket, uploadID[:2], uploadID),
 		// This is the name used in NOMAD for the zipped upload
 		Name: "raw-public.plain.zip",
 	}
 
-	filer_resp, err := s.filerClient.Client.LookupDirectoryEntry(ctx, filer_req)
+	if s.filerClient == nil {
+		http.Error(w, "filer client is not configured", http.StatusInternalServerError)
+		return
+	}
+
+	filerResp, err := s.filerClient.LookupDirectoryEntry(ctx, filerReq)
 	if err != nil {
 		// File not found in Filer -> return 404
 		http.Error(w, "upload zip not found", http.StatusNotFound)
@@ -40,19 +50,21 @@ func (s *Server) zip(w http.ResponseWriter, r *http.Request) {
 	}
 
 	subpath := chi.URLParam(r, "*")
-	if subpath == "" {
-		s.redirectUploadZip(w, r, filer_req, filer_resp)
-		return
-	} else {
+	if subpath != "" {
 		http.Error(w, "zipped subdirectories are not implemented", http.StatusNotImplemented)
 		return
 	}
 
+	s.redirectUploadZip(w, r, filerReq, filerResp)
 }
 
-func (s *Server) redirectUploadZip(w http.ResponseWriter, r *http.Request, filer_req *filer_pb.LookupDirectoryEntryRequest, resp *filer_pb.LookupDirectoryEntryResponse) {
-	directory := filer_req.GetDirectory()
-	name := filer_req.GetName()
+func (s *Server) redirectUploadZip(w http.ResponseWriter, r *http.Request, filerReq *filer_pb.LookupDirectoryEntryRequest, resp *filer_pb.LookupDirectoryEntryResponse) {
+	directory := filerReq.GetDirectory()
+	name := filerReq.GetName()
+	if resp == nil || resp.Entry == nil {
+		http.Error(w, "invalid filer response", http.StatusBadGateway)
+		return
+	}
 	entry := resp.Entry
 	remote := entry.GetRemoteEntry()
 	var storageName, bucket string
@@ -90,15 +102,14 @@ func (s *Server) redirectUploadZip(w http.ResponseWriter, r *http.Request, filer
 		return
 	}
 	http.Redirect(w, r, presignedUrl.URL, http.StatusTemporaryRedirect)
-	return
 }
 
 func objectKey(directory, name, seaweedBucket string) (string, error) {
 	root := "/buckets/" + seaweedBucket
 
-	relativeDir, ok := strings.CutPrefix(directory, root)
-	if !ok {
+	if directory != root && !strings.HasPrefix(directory, root+"/") {
 		return "", fmt.Errorf("directory %q is outside bucket %q", directory, seaweedBucket)
 	}
+	relativeDir := strings.TrimPrefix(directory, root)
 	return path.Join(strings.TrimPrefix(relativeDir, "/"), name), nil
 }

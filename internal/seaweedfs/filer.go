@@ -1,6 +1,7 @@
 package seaweedfs
 
 import (
+	"context"
 	"log/slog"
 	"time"
 
@@ -40,4 +41,12 @@ func NewFilerClient(cfg config.Config, logger *slog.Logger) (*FilerClient, error
 
 func (f *FilerClient) Close() error {
 	return f.conn.Close()
+}
+
+func (f *FilerClient) LookupDirectoryEntry(
+	ctx context.Context,
+	request *filer_pb.LookupDirectoryEntryRequest,
+	opts ...grpc.CallOption,
+) (*filer_pb.LookupDirectoryEntryResponse, error) {
+	return f.Client.LookupDirectoryEntry(ctx, request, opts...)
 }
