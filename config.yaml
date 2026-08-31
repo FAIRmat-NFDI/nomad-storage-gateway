@@ -4,9 +4,14 @@ seaweedfs:
   s3_endpoint: http://localhost:8333
   s3_bucket: nomad-public
   filer_endpoint: localhost:18888
+  s3_secret_key: ""
+  s3_access_key: ""
+
 
 providers:
   cloud1:
     type: s3
     endpoint: http://localhost:9000
     bucket: nomad-published-cloud
+    access_key: ""
+    secret_key: ""

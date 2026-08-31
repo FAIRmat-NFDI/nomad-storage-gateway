@@ -104,7 +104,7 @@ func TestZipEndpoint(t *testing.T) {
 			filer: &fakeFilerClient{response: &filer_pb.LookupDirectoryEntryResponse{
 				Entry: &filer_pb.Entry{RemoteEntry: &filer_pb.RemoteEntry{StorageName: "missing"}},
 			}},
-			wantStatus:   http.StatusBadRequest,
+			wantStatus:   http.StatusBadGateway,
 			wantBodyPart: "unknown remote storage",
 			wantCalls:    1,
 		},

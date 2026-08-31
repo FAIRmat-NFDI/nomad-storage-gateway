@@ -77,7 +77,7 @@ func (s *Server) redirectUploadZip(w http.ResponseWriter, r *http.Request, filer
 		storageName = remote.GetStorageName()
 		provider, ok := s.cfg.Providers[storageName]
 		if !ok {
-			http.Error(w, "unknown remote storage", http.StatusBadRequest)
+			http.Error(w, "unknown remote storage", http.StatusBadGateway)
 			return
 		}
 		bucket = provider.Bucket

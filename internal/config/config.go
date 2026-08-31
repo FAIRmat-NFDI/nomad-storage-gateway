@@ -75,6 +75,24 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("seaweedfs.filer_endpoint is required"))
 	}
 
+	for name, provider := range c.Providers {
+		if provider.Type != "" && provider.Type != "s3" {
+			errs = append(errs, fmt.Errorf("providers.%s.type must be %q", name, "s3"))
+		}
+		if provider.Endpoint == "" {
+			errs = append(errs, fmt.Errorf("providers.%s.endpoint is required", name))
+		}
+		if provider.Bucket == "" {
+			errs = append(errs, fmt.Errorf("providers.%s.bucket is required", name))
+		}
+		if provider.AccessKey == "" {
+			errs = append(errs, fmt.Errorf("providers.%s.access_key is required", name))
+		}
+		if provider.SecretKey == "" {
+			errs = append(errs, fmt.Errorf("providers.%s.secret_key is required", name))
+		}
+	}
+
 	return errors.Join(errs...)
 }
 
