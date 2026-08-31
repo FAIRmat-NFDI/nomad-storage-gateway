@@ -1,10 +1,9 @@
-package internal
+package config
 
 import (
 	"errors"
 	"fmt"
 	"strings"
-
 	"time"
 
 	"github.com/knadh/koanf/parsers/yaml"
@@ -13,8 +12,8 @@ import (
 	"github.com/knadh/koanf/v2"
 )
 
-// CloudProvider defines an external S3-compatible cloud storage target (MPCDF, Wasabi, AWS, etc.)
-type CloudProvider struct {
+// ObjectStore defines an external S3-compatible cloud storage target (MPCDF, Wasabi, AWS, etc.)
+type ObjectStore struct {
 	Type      string `json:"type"`     // "s3"
 	Endpoint  string `json:"endpoint"` // "https://s3.eu-central-1.wasabisys.com"
 	Region    string `json:"region"`   // "eu-central-1"
@@ -31,7 +30,7 @@ type SeaweedFSConfig struct {
 	S3AccessKey string `json:"s3_access_key"`
 	S3SecretKey string `json:"s3_secret_key"`
 
-	// (Optional) Filer gRPC address for direct metadata lookup
+	// Filer gRPC address for direct metadata lookup
 	FilerEndpoint string `json:"filer_endpoint"` // e.g. "seaweedfs-filer:18888"
 }
 
@@ -46,7 +45,7 @@ type Config struct {
 	SeaweedFS SeaweedFSConfig `json:"seaweedfs"`
 
 	// External cloud storage targets for presigned 307 redirects
-	CloudProviders map[string]CloudProvider `json:"cloud_providers"`
+	Providers map[string]ObjectStore `json:"providers"`
 }
 
 func (c Config) Validate() error {
@@ -70,6 +69,28 @@ func (c Config) Validate() error {
 
 	if c.SeaweedFS.S3SecretKey == "" {
 		errs = append(errs, errors.New("seaweedfs.s3_secret_key is required"))
+	}
+
+	if c.SeaweedFS.FilerEndpoint == "" {
+		errs = append(errs, errors.New("seaweedfs.filer_endpoint is required"))
+	}
+
+	for name, provider := range c.Providers {
+		if provider.Type != "" && provider.Type != "s3" {
+			errs = append(errs, fmt.Errorf("providers.%s.type must be %q", name, "s3"))
+		}
+		if provider.Endpoint == "" {
+			errs = append(errs, fmt.Errorf("providers.%s.endpoint is required", name))
+		}
+		if provider.Bucket == "" {
+			errs = append(errs, fmt.Errorf("providers.%s.bucket is required", name))
+		}
+		if provider.AccessKey == "" {
+			errs = append(errs, fmt.Errorf("providers.%s.access_key is required", name))
+		}
+		if provider.SecretKey == "" {
+			errs = append(errs, fmt.Errorf("providers.%s.secret_key is required", name))
+		}
 	}
 
 	return errors.Join(errs...)
@@ -98,13 +119,16 @@ func Load(path string) (Config, error) {
 	var cfg Config
 
 	if err := k.UnmarshalWithConf("", &cfg, koanf.UnmarshalConf{Tag: "json"}); err != nil {
-		return Config{}, fmt.Errorf("decode config %w", err)
+		return Config{}, fmt.Errorf("decode config: %w", err)
+	}
+
+	if cfg.Port == 0 {
+		cfg.Port = 3333
 	}
 
 	if err := cfg.Validate(); err != nil {
-		return Config{}, fmt.Errorf("invalid config %w", err)
+		return Config{}, fmt.Errorf("invalid config: %w", err)
 	}
 
 	return cfg, nil
-
 }

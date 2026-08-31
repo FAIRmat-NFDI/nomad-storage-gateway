@@ -1,8 +1,9 @@
-package internal
+package config
 
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -17,6 +18,15 @@ seaweedfs:
   s3_bucket: nomad-public
   s3_access_key: access_key
   s3_secret_key: secret_key
+  filer_endpoint: seaweedfs-filer:18888
+providers:
+  cloud1:
+    type: s3
+    endpoint: http://cloud:9000
+    region: eu-central-1
+    bucket: nomad-published-cloud
+    access_key: cloud-key
+    secret_key: cloud-secret
 `
 
 	if err := os.WriteFile(path, []byte(configYAML), 0600); err != nil {
@@ -55,6 +65,15 @@ seaweedfs:
   s3_bucket: nomad-public
   s3_access_key: file-key
   s3_secret_key: file-secret
+  filer_endpoint: seaweedfs-filer:18888
+providers:
+  cloud1:
+    type: s3
+    endpoint: http://cloud:9000
+    region: eu-central-1
+    bucket: nomad-published-cloud
+    access_key: cloud-key
+    secret_key: cloud-secret
 `
 
 	if err := os.WriteFile(path, []byte(configYAML), 0600); err != nil {
@@ -78,5 +97,70 @@ seaweedfs:
 
 	if got := cfg.SeaweedFS.S3Endpoint; got != "http://from-env:8333" {
 		t.Errorf("expected environment endpoint, got %q", got)
+	}
+}
+
+func TestLoadAppliesDefaultPortAndLoadsProviders(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	configYAML := `
+seaweedfs:
+  s3_endpoint: http://seaweedfs:8333
+  s3_bucket: nomad-public
+  s3_access_key: access_key
+  s3_secret_key: secret_key
+  filer_endpoint: seaweedfs-filer:18888
+providers:
+  cloud1:
+    type: s3
+    endpoint: http://cloud:9000
+    region: eu-central-1
+    bucket: nomad-published-cloud
+    access_key: cloud-key
+    secret_key: cloud-secret
+`
+
+	if err := os.WriteFile(path, []byte(configYAML), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	if cfg.Port != 3333 {
+		t.Errorf("expected default port 3333, got %d", cfg.Port)
+	}
+	provider, ok := cfg.Providers["cloud1"]
+	if !ok {
+		t.Fatal(`expected provider "cloud1"`)
+	}
+	if provider.Bucket != "nomad-published-cloud" {
+		t.Errorf("unexpected provider bucket: %q", provider.Bucket)
+	}
+	if provider.Region != "eu-central-1" {
+		t.Errorf("unexpected provider region: %q", provider.Region)
+	}
+}
+
+func TestValidateRequiresFilerEndpoint(t *testing.T) {
+	cfg := Config{
+		Port: 3333,
+		SeaweedFS: SeaweedFSConfig{
+			S3Endpoint:  "http://seaweedfs:8333",
+			S3Bucket:    "nomad-public",
+			S3AccessKey: "access_key",
+			S3SecretKey: "secret_key",
+		},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want missing filer endpoint error")
+	}
+	if !strings.Contains(err.Error(), "seaweedfs.filer_endpoint is required") {
+		t.Fatalf("Validate() error = %q, want filer endpoint error", err)
 	}
 }
