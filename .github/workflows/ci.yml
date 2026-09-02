@@ -3,25 +3,11 @@ name: Go CI
 on:
   workflow_dispatch:
   push:
-    paths:
-      - "**.go"
-      - "go.mod"
-      - "go.sum"
-      - "config.yaml"
-      - "Dockerfile"
-      - ".dockerignore"
-      - "e2e/**"
-      - ".github/workflows/ci.yml"
+    branches:
+      - main
+    tags:
+      - "v*"
   pull_request:
-    paths:
-      - "**.go"
-      - "go.mod"
-      - "go.sum"
-      - "config.yaml"
-      - "Dockerfile"
-      - ".dockerignore"
-      - "e2e/**"
-      - ".github/workflows/ci.yml"
 
 permissions:
   contents: read
