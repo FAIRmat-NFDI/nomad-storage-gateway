@@ -22,6 +22,7 @@ import (
 	"github.com/FAIRmat-NFDI/nomad-storage-gateway/internal/config"
 	"github.com/FAIRmat-NFDI/nomad-storage-gateway/internal/seaweedfs"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -120,10 +121,10 @@ func TestDownloadZipWithComposeServices(t *testing.T) {
 	}
 
 	t.Run("local SeaweedFS object", func(t *testing.T) {
-		assertDownload(t, ctx, gatewayURL, localUploadID, publicEndpoint, localBucket, localBody)
+		assertDownload(t, ctx, gatewayURL, localUploadID, publicEndpoint, localBucket, publicEndpoint, localBody)
 	})
 	t.Run("remote RustFS object", func(t *testing.T) {
-		assertDownload(t, ctx, gatewayURL, remoteUploadID, cloudEndpoint, cloudBucket, remoteBody)
+		assertDownload(t, ctx, gatewayURL, remoteUploadID, cloudEndpoint, cloudBucket, publicEndpoint, remoteBody)
 	})
 }
 
@@ -278,10 +279,49 @@ func waitForEntry(ctx context.Context, client filer_pb.SeaweedFilerClient, direc
 	return entry, err
 }
 
-func assertDownload(t *testing.T, ctx context.Context, gatewayURL, uploadID, storageEndpoint, bucket string, wantBody []byte) {
+func assertDownload(t *testing.T, ctx context.Context, gatewayURL, uploadID, storageEndpoint, bucket, publicEndpoint string, wantBody []byte) {
 	t.Helper()
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, gatewayURL+"/zip/"+url.PathEscape(uploadID), nil)
+	reqPath := "/zip/" + url.PathEscape(uploadID)
+	publicURL, err := url.Parse(publicEndpoint)
+	if err != nil {
+		t.Fatalf("parse public endpoint: %v", err)
+	}
+	u := *publicURL
+	u.Path = strings.TrimSuffix(publicURL.Path, "/") + reqPath
+	q := u.Query()
+	q.Set("X-Amz-Expires", "900")
+	u.RawQuery = q.Encode()
+
+	signReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		t.Fatalf("create sign request: %v", err)
+	}
+
+	signer := v4.NewSigner(func(o *v4.SignerOptions) {
+		o.DisableURIPathEscaping = true
+	})
+	signedURI, _, err := signer.PresignHTTP(
+		ctx,
+		aws.Credentials{
+			AccessKeyID:     localAccessKey,
+			SecretAccessKey: localSecretKey,
+		},
+		signReq,
+		"UNSIGNED-PAYLOAD",
+		"s3",
+		"us-east-1",
+		time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatalf("presign gateway request: %v", err)
+	}
+	signedURL, err := url.Parse(signedURI)
+	if err != nil {
+		t.Fatalf("parse signed URI: %v", err)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, gatewayURL+reqPath+"?"+signedURL.RawQuery, nil)
 	if err != nil {
 		t.Fatalf("create gateway request: %v", err)
 	}
