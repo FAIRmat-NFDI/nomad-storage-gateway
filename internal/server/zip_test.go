@@ -7,10 +7,14 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/FAIRmat-NFDI/nomad-storage-gateway/internal/config"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
 	"google.golang.org/grpc"
 )
@@ -52,6 +56,53 @@ func testConfig() config.Config {
 			},
 		},
 	}
+}
+
+func signTestRequest(t *testing.T, cfg config.Config, method, requestPath string, signingTime time.Time, expires time.Duration) *http.Request {
+	t.Helper()
+
+	publicURL, err := url.Parse(cfg.SeaweedFS.PublicEndpoint)
+	if err != nil {
+		t.Fatalf("parse public endpoint: %v", err)
+	}
+
+	u := *publicURL
+	u.Path = strings.TrimSuffix(publicURL.Path, "/") + requestPath
+	q := u.Query()
+	q.Set("X-Amz-Expires", strconv.FormatInt(int64(expires.Seconds()), 10))
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequest(method, u.String(), nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	signer := v4.NewSigner(func(o *v4.SignerOptions) {
+		o.DisableURIPathEscaping = true
+	})
+
+	signedURI, _, err := signer.PresignHTTP(
+		context.Background(),
+		aws.Credentials{
+			AccessKeyID:     cfg.SeaweedFS.S3AccessKey,
+			SecretAccessKey: cfg.SeaweedFS.S3SecretKey,
+		},
+		req,
+		"UNSIGNED-PAYLOAD",
+		"s3",
+		"us-east-1",
+		signingTime,
+	)
+	if err != nil {
+		t.Fatalf("presign test request: %v", err)
+	}
+
+	signedURL, err := url.Parse(signedURI)
+	if err != nil {
+		t.Fatalf("parse signed URI: %v", err)
+	}
+
+	return httptest.NewRequest(method, requestPath+"?"+signedURL.RawQuery, nil)
 }
 
 func TestZipEndpoint(t *testing.T) {
@@ -184,12 +235,13 @@ func TestZipEndpoint(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			router, err := NewRouter(testConfig(), tt.filer)
+			cfg := testConfig()
+			router, err := NewRouter(cfg, tt.filer)
 			if err != nil {
 				t.Fatalf("NewRouter() error = %v", err)
 			}
 
-			req := httptest.NewRequest(http.MethodGet, tt.requestPath, nil)
+			req := signTestRequest(t, cfg, http.MethodGet, tt.requestPath, time.Now().UTC(), 15*time.Minute)
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, req)
 
@@ -219,12 +271,13 @@ func TestZipEndpoint(t *testing.T) {
 
 func TestZipEndpointRejectsInvalidUploadID(t *testing.T) {
 	filer := &fakeFilerClient{}
-	router, err := NewRouter(testConfig(), filer)
+	cfg := testConfig()
+	router, err := NewRouter(cfg, filer)
 	if err != nil {
 		t.Fatalf("NewRouter() error = %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/zip/ab", nil)
+	req := signTestRequest(t, cfg, http.MethodGet, "/zip/ab", time.Now().UTC(), 15*time.Minute)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -237,12 +290,13 @@ func TestZipEndpointRejectsInvalidUploadID(t *testing.T) {
 }
 
 func TestZipEndpointRequiresFilerClient(t *testing.T) {
-	router, err := NewRouter(testConfig(), nil)
+	cfg := testConfig()
+	router, err := NewRouter(cfg, nil)
 	if err != nil {
 		t.Fatalf("NewRouter() error = %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/zip/abcdef", nil)
+	req := signTestRequest(t, cfg, http.MethodGet, "/zip/abcdef", time.Now().UTC(), 15*time.Minute)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
