@@ -35,3 +35,7 @@ lint:
 # Clean build artifacts
 clean:
     rm -rf bin/ coverage.out
+
+# Build docker image
+docker-build tag="ghcr.io/fairmat-nfdi/seaweedfs-storage-gateway:v1.0.0":
+    docker build -t {{tag}} .
