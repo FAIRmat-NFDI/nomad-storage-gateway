@@ -35,6 +35,9 @@ type SeaweedFSConfig struct {
 
 	// Public Endpoint for the cluster
 	PublicEndpoint string `json:"public_endpoint"` // e.g. "https://nomad-lab.eu/files"
+
+	// NOMAD upload prefix size. This should match the prefix size used in the deployment.
+	PrefixSize int `json:"prefix_size"`
 }
 
 type Config struct {
@@ -135,6 +138,10 @@ func Load(path string) (Config, error) {
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, fmt.Errorf("invalid config: %w", err)
+	}
+
+	if cfg.SeaweedFS.PrefixSize <= 0 {
+		cfg.SeaweedFS.PrefixSize = 2
 	}
 
 	return cfg, nil

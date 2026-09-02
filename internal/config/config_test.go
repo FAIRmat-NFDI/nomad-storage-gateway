@@ -140,6 +140,9 @@ providers:
 	if cfg.Port != 3333 {
 		t.Errorf("expected default port 3333, got %d", cfg.Port)
 	}
+	if cfg.SeaweedFS.PrefixSize != 2 {
+		t.Errorf("expected default prefix size 2, got %d", cfg.SeaweedFS.PrefixSize)
+	}
 	provider, ok := cfg.Providers["cloud1"]
 	if !ok {
 		t.Fatal(`expected provider "cloud1"`)
