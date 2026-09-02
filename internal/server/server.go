@@ -35,7 +35,7 @@ func NewRouter(cfg config.Config, filerClient filerLookupClient) (http.Handler, 
 
 	providers[centralSeaweedFSProvider] = config.ObjectStore{
 		Type:      "s3",
-		Endpoint:  cfg.SeaweedFS.S3Endpoint,
+		Endpoint:  cfg.SeaweedFS.PublicEndpoint,
 		Bucket:    cfg.SeaweedFS.S3Bucket,
 		AccessKey: cfg.SeaweedFS.S3AccessKey,
 		SecretKey: cfg.SeaweedFS.S3SecretKey,

@@ -2,6 +2,7 @@ port: 3333
 
 seaweedfs:
   s3_endpoint: http://localhost:8333
+  public_endpoint: http://localhost:8333
   s3_bucket: nomad-public
   filer_endpoint: localhost:18888
   s3_secret_key: ""
