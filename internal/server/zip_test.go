@@ -94,7 +94,18 @@ func TestZipEndpoint(t *testing.T) {
 			name:        "remote object",
 			requestPath: "/zip/" + uploadID,
 			filer: &fakeFilerClient{response: &filer_pb.LookupDirectoryEntryResponse{
-				Entry: &filer_pb.Entry{RemoteEntry: &filer_pb.RemoteEntry{StorageName: "cloud1"}},
+				Entry: &filer_pb.Entry{
+					Name: "raw-public.plain.zip",
+					Attributes: &filer_pb.FuseAttributes{
+						FileSize: 1024,
+						Mtime:    100,
+					},
+					RemoteEntry: &filer_pb.RemoteEntry{
+						StorageName:       "cloud1",
+						RemoteSize:        1024,
+						LastLocalSyncTsNs: 200 * 1e9,
+					},
+				},
 			}},
 			wantStatus: http.StatusTemporaryRedirect,
 			wantHost:   "cloud.test:9000",
@@ -103,14 +114,53 @@ func TestZipEndpoint(t *testing.T) {
 			wantCalls:  1,
 		},
 		{
-			name:        "unknown remote object",
+			name:        "stale remote object falls back to local seaweedfs",
 			requestPath: "/zip/" + uploadID,
 			filer: &fakeFilerClient{response: &filer_pb.LookupDirectoryEntryResponse{
-				Entry: &filer_pb.Entry{RemoteEntry: &filer_pb.RemoteEntry{StorageName: "missing"}},
+				Entry: &filer_pb.Entry{
+					Name:   "raw-public.plain.zip",
+					Chunks: []*filer_pb.FileChunk{{FileId: "local_chunk"}},
+					Attributes: &filer_pb.FuseAttributes{
+						FileSize: 1024,
+						Mtime:    300, // modified after sync
+					},
+					RemoteEntry: &filer_pb.RemoteEntry{
+						StorageName:       "cloud1",
+						RemoteSize:        1024,
+						LastLocalSyncTsNs: 200 * 1e9,
+					},
+				},
 			}},
-			wantStatus:   http.StatusBadGateway,
-			wantBodyPart: "unknown remote storage",
-			wantCalls:    1,
+			wantStatus:     http.StatusTemporaryRedirect,
+			wantHost:       "nomad-lab.eu",
+			wantPathPrefix: "/files",
+			wantBucket:     "nomad-public",
+			wantKey:        "ab/abcdef/raw-public.plain.zip",
+			wantCalls:      1,
+		},
+		{
+			name:        "unknown remote object falls back to local seaweedfs",
+			requestPath: "/zip/" + uploadID,
+			filer: &fakeFilerClient{response: &filer_pb.LookupDirectoryEntryResponse{
+				Entry: &filer_pb.Entry{
+					Name: "raw-public.plain.zip",
+					Attributes: &filer_pb.FuseAttributes{
+						FileSize: 1024,
+						Mtime:    100,
+					},
+					RemoteEntry: &filer_pb.RemoteEntry{
+						StorageName:       "missing",
+						RemoteSize:        1024,
+						LastLocalSyncTsNs: 200 * 1e9,
+					},
+				},
+			}},
+			wantStatus:     http.StatusTemporaryRedirect,
+			wantHost:       "nomad-lab.eu",
+			wantPathPrefix: "/files",
+			wantBucket:     "nomad-public",
+			wantKey:        "ab/abcdef/raw-public.plain.zip",
+			wantCalls:      1,
 		},
 		{
 			name:        "zip subpath",
@@ -278,5 +328,155 @@ func assertRedirect(t *testing.T, rec *httptest.ResponseRecorder, wantHost, want
 	}
 	if got := u.Query().Get("X-Amz-Signature"); got == "" {
 		t.Error("redirect is missing an AWS signature")
+	}
+}
+
+func TestIsCloudFresh(t *testing.T) {
+	const (
+		syncTimeNs  = 1_700_000_000_000_000_000
+		syncTimeSec = syncTimeNs / 1e9
+		fileSize    = uint64(2048)
+	)
+
+	providers := map[string]config.ObjectStore{
+		"cloud1": {Bucket: "cloud-bucket"},
+	}
+
+	tests := []struct {
+		name      string
+		entry     *filer_pb.Entry
+		wantFresh bool
+	}{
+		{
+			name:      "nil entry",
+			entry:     nil,
+			wantFresh: false,
+		},
+		{
+			name: "local only (no remote entry)",
+			entry: &filer_pb.Entry{
+				Attributes: &filer_pb.FuseAttributes{FileSize: fileSize, Mtime: syncTimeSec},
+			},
+			wantFresh: false,
+		},
+		{
+			name: "no attributes",
+			entry: &filer_pb.Entry{
+				RemoteEntry: &filer_pb.RemoteEntry{
+					StorageName:       "cloud1",
+					RemoteSize:        int64(fileSize),
+					LastLocalSyncTsNs: syncTimeNs,
+				},
+			},
+			wantFresh: false,
+		},
+		{
+			name: "remote-only object (mounted or uncached, no local chunks, LastLocalSyncTsNs == 0)",
+			entry: &filer_pb.Entry{
+				Attributes: &filer_pb.FuseAttributes{FileSize: fileSize, Mtime: syncTimeSec},
+				RemoteEntry: &filer_pb.RemoteEntry{
+					StorageName:       "cloud1",
+					RemoteSize:        int64(fileSize),
+					LastLocalSyncTsNs: 0,
+				},
+			},
+			wantFresh: true,
+		},
+		{
+			name: "locally cached entry exists but never synced (LastLocalSyncTsNs == 0)",
+			entry: &filer_pb.Entry{
+				Chunks:     []*filer_pb.FileChunk{{FileId: "chunk1"}},
+				Attributes: &filer_pb.FuseAttributes{FileSize: fileSize, Mtime: syncTimeSec},
+				RemoteEntry: &filer_pb.RemoteEntry{
+					StorageName:       "cloud1",
+					RemoteSize:        int64(fileSize),
+					LastLocalSyncTsNs: 0,
+				},
+			},
+			wantFresh: false,
+		},
+		{
+			name: "stale cloud: locally cached and local mtime is newer than sync time",
+			entry: &filer_pb.Entry{
+				Chunks: []*filer_pb.FileChunk{{FileId: "chunk1"}},
+				Attributes: &filer_pb.FuseAttributes{
+					FileSize: fileSize,
+					Mtime:    syncTimeSec + 10,
+				},
+				RemoteEntry: &filer_pb.RemoteEntry{
+					StorageName:       "cloud1",
+					RemoteSize:        int64(fileSize),
+					LastLocalSyncTsNs: syncTimeNs,
+				},
+			},
+			wantFresh: false,
+		},
+		{
+			name: "size mismatch",
+			entry: &filer_pb.Entry{
+				Attributes: &filer_pb.FuseAttributes{
+					FileSize: fileSize + 500,
+					Mtime:    syncTimeSec - 10,
+				},
+				RemoteEntry: &filer_pb.RemoteEntry{
+					StorageName:       "cloud1",
+					RemoteSize:        int64(fileSize),
+					LastLocalSyncTsNs: syncTimeNs,
+				},
+			},
+			wantFresh: false,
+		},
+		{
+			name: "unknown remote provider",
+			entry: &filer_pb.Entry{
+				Attributes: &filer_pb.FuseAttributes{FileSize: fileSize, Mtime: syncTimeSec - 10},
+				RemoteEntry: &filer_pb.RemoteEntry{
+					StorageName:       "unknown_provider",
+					RemoteSize:        int64(fileSize),
+					LastLocalSyncTsNs: syncTimeNs,
+				},
+			},
+			wantFresh: false,
+		},
+		{
+			name: "fresh: mtime older than sync time, size matches, known provider",
+			entry: &filer_pb.Entry{
+				Chunks: []*filer_pb.FileChunk{{FileId: "chunk1"}},
+				Attributes: &filer_pb.FuseAttributes{
+					FileSize: fileSize,
+					Mtime:    syncTimeSec - 60,
+				},
+				RemoteEntry: &filer_pb.RemoteEntry{
+					StorageName:       "cloud1",
+					RemoteSize:        int64(fileSize),
+					LastLocalSyncTsNs: syncTimeNs,
+				},
+			},
+			wantFresh: true,
+		},
+		{
+			name: "fresh: exact boundary where mtime equals sync time",
+			entry: &filer_pb.Entry{
+				Attributes: &filer_pb.FuseAttributes{
+					FileSize: fileSize,
+					Mtime:    syncTimeSec,
+				},
+				RemoteEntry: &filer_pb.RemoteEntry{
+					StorageName:       "cloud1",
+					RemoteSize:        int64(fileSize),
+					LastLocalSyncTsNs: syncTimeNs,
+				},
+			},
+			wantFresh: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isCloudFresh(tt.entry, providers)
+			if got != tt.wantFresh {
+				t.Errorf("isCloudFresh() = %v, want %v", got, tt.wantFresh)
+			}
+		})
 	}
 }
