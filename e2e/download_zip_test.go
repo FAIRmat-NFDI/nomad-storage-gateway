@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -44,6 +45,7 @@ func TestDownloadZipWithComposeServices(t *testing.T) {
 	defer cancel()
 
 	localEndpoint := envOrDefault("E2E_SEAWEEDFS_S3_ENDPOINT", "http://127.0.0.1:8333")
+	publicEndpoint := envOrDefault("E2E_SEAWEEDFS_PUBLIC_ENDPOINT", localEndpoint)
 	cloudEndpoint := envOrDefault("E2E_RUSTFS_ENDPOINT", "http://127.0.0.1:9000")
 	filerEndpoint := envOrDefault("E2E_SEAWEEDFS_FILER_ENDPOINT", "127.0.0.1:18888")
 
@@ -112,13 +114,13 @@ func TestDownloadZipWithComposeServices(t *testing.T) {
 	gatewayURL := envOrDefault("E2E_GATEWAY_URL", "http://127.0.0.1:3333")
 	gatewayPort := envOrDefault("E2E_GATEWAY_PORT", "3333")
 	gatewayBinary := buildGateway(t, ctx)
-	startGateway(t, ctx, gatewayBinary, gatewayPort, localEndpoint, filerEndpoint, cloudEndpoint)
+	startGateway(t, ctx, gatewayBinary, gatewayPort, localEndpoint, publicEndpoint, filerEndpoint, cloudEndpoint)
 	if err := waitForGateway(ctx, gatewayURL); err != nil {
 		t.Fatalf("wait for gateway: %v", err)
 	}
 
 	t.Run("local SeaweedFS object", func(t *testing.T) {
-		assertDownload(t, ctx, gatewayURL, localUploadID, localEndpoint, localBucket, localBody)
+		assertDownload(t, ctx, gatewayURL, localUploadID, publicEndpoint, localBucket, localBody)
 	})
 	t.Run("remote RustFS object", func(t *testing.T) {
 		assertDownload(t, ctx, gatewayURL, remoteUploadID, cloudEndpoint, cloudBucket, remoteBody)
@@ -139,7 +141,7 @@ func buildGateway(t *testing.T, ctx context.Context) string {
 	return binaryPath
 }
 
-func startGateway(t *testing.T, ctx context.Context, binaryPath, port, localEndpoint, filerEndpoint, cloudEndpoint string) {
+func startGateway(t *testing.T, ctx context.Context, binaryPath, port, localEndpoint, publicEndpoint, filerEndpoint, cloudEndpoint string) {
 	t.Helper()
 
 	processCtx, cancel := context.WithCancel(ctx)
@@ -148,6 +150,7 @@ func startGateway(t *testing.T, ctx context.Context, binaryPath, port, localEndp
 	command.Env = append(os.Environ(),
 		"NOMAD_PORT="+port,
 		"NOMAD_SEAWEEDFS__S3_ENDPOINT="+localEndpoint,
+		"NOMAD_SEAWEEDFS__PUBLIC_ENDPOINT="+publicEndpoint,
 		"NOMAD_SEAWEEDFS__S3_BUCKET="+localBucket,
 		"NOMAD_SEAWEEDFS__S3_ACCESS_KEY="+localAccessKey,
 		"NOMAD_SEAWEEDFS__S3_SECRET_KEY="+localSecretKey,
@@ -307,8 +310,9 @@ func assertDownload(t *testing.T, ctx context.Context, gatewayURL, uploadID, sto
 	if redirectURL.Host != storageURL.Host {
 		t.Errorf("redirect host = %q, want %q", redirectURL.Host, storageURL.Host)
 	}
-	if !strings.HasPrefix(redirectURL.Path, "/"+bucket+"/") {
-		t.Errorf("redirect path = %q, want bucket prefix %q", redirectURL.Path, "/"+bucket+"/")
+	wantPathPrefix := path.Join("/", storageURL.Path, bucket) + "/"
+	if !strings.HasPrefix(redirectURL.Path, wantPathPrefix) {
+		t.Errorf("redirect path = %q, want prefix %q", redirectURL.Path, wantPathPrefix)
 	}
 	if redirectURL.Query().Get("X-Amz-Signature") == "" {
 		t.Error("redirect is missing an AWS signature")

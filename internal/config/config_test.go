@@ -19,6 +19,7 @@ seaweedfs:
   s3_access_key: access_key
   s3_secret_key: secret_key
   filer_endpoint: seaweedfs-filer:18888
+  public_endpoint: https://nomad-lab.eu/files
 providers:
   cloud1:
     type: s3
@@ -45,6 +46,10 @@ providers:
 	if cfg.SeaweedFS.S3Endpoint != "http://seaweedfs:8333" {
 		t.Errorf("unexpected SeaweedFS endpoint: %q", cfg.SeaweedFS.S3Endpoint)
 	}
+
+	if cfg.SeaweedFS.PublicEndpoint != "https://nomad-lab.eu/files" {
+		t.Errorf("unexpected SeaweedFS public endpoint: %q", cfg.SeaweedFS.PublicEndpoint)
+	}
 }
 
 func TestLoadMissingFile(t *testing.T) {
@@ -66,6 +71,7 @@ seaweedfs:
   s3_access_key: file-key
   s3_secret_key: file-secret
   filer_endpoint: seaweedfs-filer:18888
+  public_endpoint: https://nomad-lab.eu/files
 providers:
   cloud1:
     type: s3
@@ -111,6 +117,7 @@ seaweedfs:
   s3_access_key: access_key
   s3_secret_key: secret_key
   filer_endpoint: seaweedfs-filer:18888
+  public_endpoint: https://nomad-lab.eu/files
 providers:
   cloud1:
     type: s3

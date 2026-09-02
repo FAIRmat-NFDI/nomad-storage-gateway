@@ -32,6 +32,9 @@ type SeaweedFSConfig struct {
 
 	// Filer gRPC address for direct metadata lookup
 	FilerEndpoint string `json:"filer_endpoint"` // e.g. "seaweedfs-filer:18888"
+
+	// Public Endpoint for the cluster
+	PublicEndpoint string `json:"public_endpoint"` // e.g. "https://nomad-lab.eu/files"
 }
 
 type Config struct {
@@ -73,6 +76,10 @@ func (c Config) Validate() error {
 
 	if c.SeaweedFS.FilerEndpoint == "" {
 		errs = append(errs, errors.New("seaweedfs.filer_endpoint is required"))
+	}
+
+	if c.SeaweedFS.PublicEndpoint == "" {
+		errs = append(errs, errors.New("seaweedfs.public_endpoint is required"))
 	}
 
 	for name, provider := range c.Providers {

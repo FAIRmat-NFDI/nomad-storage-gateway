@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path"
 	"strings"
 	"testing"
 
@@ -34,11 +35,12 @@ func (f *fakeFilerClient) LookupDirectoryEntry(
 func testConfig() config.Config {
 	return config.Config{
 		SeaweedFS: config.SeaweedFSConfig{
-			S3Endpoint:    "http://seaweedfs.test:8333",
-			S3Bucket:      "nomad-public",
-			S3AccessKey:   "seaweed-access",
-			S3SecretKey:   "seaweed-secret",
-			FilerEndpoint: "filer.test:18888",
+			S3Endpoint:     "http://seaweedfs.test:8333",
+			S3Bucket:       "nomad-public",
+			S3AccessKey:    "seaweed-access",
+			S3SecretKey:    "seaweed-secret",
+			FilerEndpoint:  "filer.test:18888",
+			PublicEndpoint: "https://nomad-lab.eu/files",
 		},
 		Providers: map[string]config.ObjectStore{
 			"cloud1": {
@@ -56,15 +58,16 @@ func TestZipEndpoint(t *testing.T) {
 	const uploadID = "abcdef"
 
 	tests := []struct {
-		name         string
-		requestPath  string
-		filer        *fakeFilerClient
-		wantStatus   int
-		wantHost     string
-		wantBucket   string
-		wantKey      string
-		wantBodyPart string
-		wantCalls    int
+		name           string
+		requestPath    string
+		filer          *fakeFilerClient
+		wantStatus     int
+		wantHost       string
+		wantPathPrefix string
+		wantBucket     string
+		wantKey        string
+		wantBodyPart   string
+		wantCalls      int
 	}{
 		{
 			name:         "filer lookup error",
@@ -80,11 +83,12 @@ func TestZipEndpoint(t *testing.T) {
 			filer: &fakeFilerClient{response: &filer_pb.LookupDirectoryEntryResponse{
 				Entry: &filer_pb.Entry{Name: "raw-public.plain.zip"},
 			}},
-			wantStatus: http.StatusTemporaryRedirect,
-			wantHost:   "seaweedfs.test:8333",
-			wantBucket: "nomad-public",
-			wantKey:    "ab/abcdef/raw-public.plain.zip",
-			wantCalls:  1,
+			wantStatus:     http.StatusTemporaryRedirect,
+			wantHost:       "nomad-lab.eu",
+			wantPathPrefix: "/files",
+			wantBucket:     "nomad-public",
+			wantKey:        "ab/abcdef/raw-public.plain.zip",
+			wantCalls:      1,
 		},
 		{
 			name:        "remote object",
@@ -157,7 +161,7 @@ func TestZipEndpoint(t *testing.T) {
 				}
 			}
 			if tt.wantHost != "" {
-				assertRedirect(t, rec, tt.wantHost, tt.wantBucket, tt.wantKey)
+				assertRedirect(t, rec, tt.wantHost, tt.wantPathPrefix, tt.wantBucket, tt.wantKey)
 			}
 		})
 	}
@@ -258,7 +262,7 @@ func TestObjectKey(t *testing.T) {
 	}
 }
 
-func assertRedirect(t *testing.T, rec *httptest.ResponseRecorder, wantHost, wantBucket, wantKey string) {
+func assertRedirect(t *testing.T, rec *httptest.ResponseRecorder, wantHost, wantPathPrefix, wantBucket, wantKey string) {
 	t.Helper()
 
 	location := rec.Header().Get("Location")
@@ -269,7 +273,7 @@ func assertRedirect(t *testing.T, rec *httptest.ResponseRecorder, wantHost, want
 	if u.Host != wantHost {
 		t.Errorf("redirect host = %q, want %q", u.Host, wantHost)
 	}
-	if got, want := u.Path, "/"+wantBucket+"/"+wantKey; got != want {
+	if got, want := u.Path, path.Join("/", wantPathPrefix, wantBucket, wantKey); got != want {
 		t.Errorf("redirect path = %q, want %q", got, want)
 	}
 	if got := u.Query().Get("X-Amz-Signature"); got == "" {
