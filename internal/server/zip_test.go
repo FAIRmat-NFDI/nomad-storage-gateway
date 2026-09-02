@@ -45,6 +45,7 @@ func testConfig() config.Config {
 			S3SecretKey:    "seaweed-secret",
 			FilerEndpoint:  "filer.test:18888",
 			PublicEndpoint: "https://nomad-lab.eu/files",
+			PrefixSize:     2,
 		},
 		Providers: map[string]config.ObjectStore{
 			"cloud1": {
@@ -278,6 +279,56 @@ func TestZipEndpointRejectsInvalidUploadID(t *testing.T) {
 	}
 
 	req := signTestRequest(t, cfg, http.MethodGet, "/zip/ab", time.Now().UTC(), 15*time.Minute)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if filer.calls != 0 {
+		t.Fatalf("LookupDirectoryEntry calls = %d, want 0", filer.calls)
+	}
+}
+
+func TestZipEndpointUsesConfiguredPrefixSize(t *testing.T) {
+	const uploadID = "abcdef"
+
+	cfg := testConfig()
+	cfg.SeaweedFS.PrefixSize = 3
+	filer := &fakeFilerClient{response: &filer_pb.LookupDirectoryEntryResponse{
+		Entry: &filer_pb.Entry{Name: "raw-public.plain.zip"},
+	}}
+
+	router, err := NewRouter(cfg, filer)
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := signTestRequest(t, cfg, http.MethodGet, "/zip/"+uploadID, time.Now().UTC(), 15*time.Minute)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusTemporaryRedirect)
+	}
+
+	wantDirectory := "/buckets/nomad-public/abc/" + uploadID
+	if got := filer.request.GetDirectory(); got != wantDirectory {
+		t.Fatalf("lookup directory = %q, want %q", got, wantDirectory)
+	}
+}
+
+func TestZipEndpointRejectsUploadIDShorterThanConfiguredPrefix(t *testing.T) {
+	cfg := testConfig()
+	cfg.SeaweedFS.PrefixSize = 3
+	filer := &fakeFilerClient{}
+
+	router, err := NewRouter(cfg, filer)
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := signTestRequest(t, cfg, http.MethodGet, "/zip/abc", time.Now().UTC(), 15*time.Minute)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 

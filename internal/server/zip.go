@@ -26,14 +26,24 @@ type filerLookupClient interface {
 func (s *Server) zip(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	uploadID := chi.URLParam(r, "upload_id")
-	if uploadID == "" || len(uploadID) <= 2 {
+	prefixSize := s.cfg.SeaweedFS.PrefixSize
+	if prefixSize <= 0 {
+		prefixSize = 2
+	}
+	if uploadID == "" || len(uploadID) <= prefixSize {
 		http.Error(w, "missing/invalid upload id", http.StatusBadRequest)
 		return
 	}
 
+	directory := fmt.Sprintf(
+		"/buckets/%s/%s/%s",
+		s.cfg.SeaweedFS.S3Bucket,
+		uploadID[:prefixSize],
+		uploadID,
+	)
 	filerReq := &filer_pb.LookupDirectoryEntryRequest{
 		// SeaweedFS Filer Path (for gRPC metadata check)
-		Directory: fmt.Sprintf("/buckets/%s/%s/%s", s.cfg.SeaweedFS.S3Bucket, uploadID[:2], uploadID),
+		Directory: directory,
 		// This is the name used in NOMAD for the zipped upload
 		Name: "raw-public.plain.zip",
 	}
