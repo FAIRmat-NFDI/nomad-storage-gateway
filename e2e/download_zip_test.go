@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -87,8 +89,23 @@ func TestDownloadZipWithComposeServices(t *testing.T) {
 
 	localUploadID := fmt.Sprintf("e2e-local-%d", time.Now().UnixNano())
 	remoteUploadID := fmt.Sprintf("e2e-remote-%d", time.Now().UnixNano())
-	localBody := []byte("zip content served by SeaweedFS")
-	remoteBody := []byte("zip content served by RustFS")
+
+	testFiles := map[string]testArchiveEntry{
+		"vasp/INCAR": {
+			Method: zip.Deflate,
+			Body:   "SYSTEM = Silicon\nENCUT = 450\n",
+		},
+		"vasp/POSCAR": {
+			Method: zip.Store,
+			Body:   "Si\n1.0\n5.43 0 0\n0 5.43 0\n0 0 5.43\n",
+		},
+		"data.json": {
+			Method: zip.Deflate,
+			Body:   `{"name":"nomad"}`,
+		},
+	}
+	localBody := createTestZipArchive(t, testFiles)
+	remoteBody := createTestZipArchive(t, testFiles)
 
 	if err := putObject(ctx, localS3, localBucket, uploadKey(localUploadID), localBody); err != nil {
 		t.Fatalf("seed local zip: %v", err)
@@ -125,6 +142,150 @@ func TestDownloadZipWithComposeServices(t *testing.T) {
 	})
 	t.Run("remote RustFS object", func(t *testing.T) {
 		assertDownload(t, ctx, gatewayURL, remoteUploadID, cloudEndpoint, cloudBucket, publicEndpoint, remoteBody)
+	})
+	t.Run("subpath zip streaming", func(t *testing.T) {
+		resp := doGatewayRequest(t, ctx, gatewayURL, publicEndpoint, "/zip/"+localUploadID+"/vasp", nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if got := resp.Header.Get("Content-Type"); got != "application/zip" {
+			t.Errorf("Content-Type = %q, want application/zip", got)
+		}
+		if got := resp.Header.Get("Content-Disposition"); got != `attachment; filename="vasp.zip"` {
+			t.Errorf("Content-Disposition = %q, want attachment; filename=\"vasp.zip\"", got)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read response body: %v", err)
+		}
+		files := readZipFiles(t, body)
+		if len(files) != 2 {
+			t.Fatalf("zip entries count = %d, want 2", len(files))
+		}
+		if got := files["INCAR"]; got != testFiles["vasp/INCAR"].Body {
+			t.Errorf("INCAR content = %q, want %q", got, testFiles["vasp/INCAR"].Body)
+		}
+		if got := files["POSCAR"]; got != testFiles["vasp/POSCAR"].Body {
+			t.Errorf("POSCAR content = %q, want %q", got, testFiles["vasp/POSCAR"].Body)
+		}
+	})
+	t.Run("single file download", func(t *testing.T) {
+		resp := doGatewayRequest(t, ctx, gatewayURL, publicEndpoint, "/file/"+localUploadID+"/vasp/INCAR", nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if got := resp.Header.Get("Content-Disposition"); got != `attachment; filename="INCAR"` {
+			t.Errorf("Content-Disposition = %q, want attachment; filename=\"INCAR\"", got)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read response body: %v", err)
+		}
+		if got := string(body); got != testFiles["vasp/INCAR"].Body {
+			t.Errorf("file body = %q, want %q", got, testFiles["vasp/INCAR"].Body)
+		}
+	})
+	t.Run("single file download json mime", func(t *testing.T) {
+		resp := doGatewayRequest(t, ctx, gatewayURL, publicEndpoint, "/file/"+localUploadID+"/data.json", nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+			t.Errorf("Content-Type = %q, want application/json", got)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read response body: %v", err)
+		}
+		if got := string(body); got != testFiles["data.json"].Body {
+			t.Errorf("file body = %q, want %q", got, testFiles["data.json"].Body)
+		}
+	})
+	t.Run("file range slicing deflate", func(t *testing.T) {
+		query := url.Values{"offset": {"9"}, "length": {"7"}}
+		resp := doGatewayRequest(t, ctx, gatewayURL, publicEndpoint, "/file/"+localUploadID+"/vasp/INCAR", query)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if got := resp.Header.Get("Content-Type"); got != "application/octet-stream" {
+			t.Errorf("Content-Type = %q, want application/octet-stream", got)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read response body: %v", err)
+		}
+		if got := string(body); got != "Silicon" {
+			t.Errorf("sliced body = %q, want %q", got, "Silicon")
+		}
+	})
+	t.Run("file range slicing store", func(t *testing.T) {
+		query := url.Values{"offset": {"3"}, "length": {"3"}}
+		resp := doGatewayRequest(t, ctx, gatewayURL, publicEndpoint, "/file/"+localUploadID+"/vasp/POSCAR", query)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read response body: %v", err)
+		}
+		if got := string(body); got != "1.0" {
+			t.Errorf("sliced body = %q, want %q", got, "1.0")
+		}
+	})
+	t.Run("file range invalid offset", func(t *testing.T) {
+		query := url.Values{"offset": {"99999"}}
+		resp := doGatewayRequest(t, ctx, gatewayURL, publicEndpoint, "/file/"+localUploadID+"/vasp/INCAR", query)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+		}
+	})
+	t.Run("cached file download consistency", func(t *testing.T) {
+		resp := doGatewayRequest(t, ctx, gatewayURL, publicEndpoint, "/file/"+localUploadID+"/vasp/INCAR", nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read response body: %v", err)
+		}
+		if got := string(body); got != testFiles["vasp/INCAR"].Body {
+			t.Errorf("file body = %q, want %q", got, testFiles["vasp/INCAR"].Body)
+		}
+	})
+	t.Run("remote RustFS single file download", func(t *testing.T) {
+		resp := doGatewayRequest(t, ctx, gatewayURL, publicEndpoint, "/file/"+remoteUploadID+"/vasp/INCAR", nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read response body: %v", err)
+		}
+		if got := string(body); got != testFiles["vasp/INCAR"].Body {
+			t.Errorf("file body = %q, want %q", got, testFiles["vasp/INCAR"].Body)
+		}
+	})
+	t.Run("not found subpath zip", func(t *testing.T) {
+		resp := doGatewayRequest(t, ctx, gatewayURL, publicEndpoint, "/zip/"+localUploadID+"/nonexistent", nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+		}
+	})
+	t.Run("not found single file", func(t *testing.T) {
+		resp := doGatewayRequest(t, ctx, gatewayURL, publicEndpoint, "/file/"+localUploadID+"/nonexistent.txt", nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+		}
 	})
 }
 
@@ -255,7 +416,20 @@ func mountRemoteZip(ctx context.Context, uploadID string) error {
 
 	output, err := command.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("run remote setup: %w\n%s", err, output)
+		altCommand := exec.CommandContext(ctx, "docker", "exec", "-i", "nomad_seaweedfs", "weed", "shell", "-filer=localhost:8888")
+		altCommand.Stdin = strings.NewReader(fmt.Sprintf(
+			"remote.configure -name=cloud1 -type=s3 -s3.access_key=%s -s3.secret_key=%s -s3.region=us-east-1 -s3.endpoint=http://rustfs_cloud:9000 -s3.force_path_style=true\n"+
+				"remote.mount -dir=%s -remote=cloud1/%s/%s -metadataStrategy=eager\n",
+			cloudAccessKey,
+			cloudSecretKey,
+			uploadDirectory(localBucket, uploadID),
+			cloudBucket,
+			uploadID[:2]+"/"+uploadID,
+		))
+		altOutput, altErr := altCommand.CombinedOutput()
+		if altErr != nil {
+			return fmt.Errorf("run remote setup: %w\n%s\nfallback error: %v\n%s", err, output, altErr, altOutput)
+		}
 	}
 	return nil
 }
@@ -283,55 +457,7 @@ func assertDownload(t *testing.T, ctx context.Context, gatewayURL, uploadID, sto
 	t.Helper()
 
 	reqPath := "/zip/" + url.PathEscape(uploadID)
-	publicURL, err := url.Parse(publicEndpoint)
-	if err != nil {
-		t.Fatalf("parse public endpoint: %v", err)
-	}
-	u := *publicURL
-	u.Path = strings.TrimSuffix(publicURL.Path, "/") + reqPath
-	q := u.Query()
-	q.Set("X-Amz-Expires", "900")
-	u.RawQuery = q.Encode()
-
-	signReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		t.Fatalf("create sign request: %v", err)
-	}
-
-	signer := v4.NewSigner(func(o *v4.SignerOptions) {
-		o.DisableURIPathEscaping = true
-	})
-	signedURI, _, err := signer.PresignHTTP(
-		ctx,
-		aws.Credentials{
-			AccessKeyID:     localAccessKey,
-			SecretAccessKey: localSecretKey,
-		},
-		signReq,
-		"UNSIGNED-PAYLOAD",
-		"s3",
-		"us-east-1",
-		time.Now().UTC(),
-	)
-	if err != nil {
-		t.Fatalf("presign gateway request: %v", err)
-	}
-	signedURL, err := url.Parse(signedURI)
-	if err != nil {
-		t.Fatalf("parse signed URI: %v", err)
-	}
-
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, gatewayURL+reqPath+"?"+signedURL.RawQuery, nil)
-	if err != nil {
-		t.Fatalf("create gateway request: %v", err)
-	}
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
-	response, err := client.Do(request)
-	if err != nil {
-		t.Fatalf("request gateway: %v", err)
-	}
+	response := doGatewayRequest(t, ctx, gatewayURL, publicEndpoint, reqPath, nil)
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusTemporaryRedirect {
@@ -378,6 +504,125 @@ func assertDownload(t *testing.T, ctx context.Context, gatewayURL, uploadID, sto
 	if !bytes.Equal(gotBody, wantBody) {
 		t.Errorf("downloaded body = %q, want %q", gotBody, wantBody)
 	}
+}
+
+type testArchiveEntry struct {
+	Method uint16
+	Body   string
+}
+
+func createTestZipArchive(t *testing.T, entries map[string]testArchiveEntry) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+
+	names := make([]string, 0, len(entries))
+	for name := range entries {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		entry := entries[name]
+		header := &zip.FileHeader{
+			Name:   name,
+			Method: entry.Method,
+		}
+		f, err := w.CreateHeader(header)
+		if err != nil {
+			t.Fatalf("create zip entry %s: %v", name, err)
+		}
+		if _, err := f.Write([]byte(entry.Body)); err != nil {
+			t.Fatalf("write zip entry %s: %v", name, err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close zip writer: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func readZipFiles(t *testing.T, body []byte) map[string]string {
+	t.Helper()
+
+	reader, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		t.Fatalf("open zip archive: %v", err)
+	}
+	files := make(map[string]string)
+	for _, f := range reader.File {
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatalf("open zip entry %s: %v", f.Name, err)
+		}
+		data, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatalf("read zip entry %s: %v", f.Name, err)
+		}
+		files[f.Name] = string(data)
+	}
+	return files
+}
+
+func doGatewayRequest(t *testing.T, ctx context.Context, gatewayURL, publicEndpoint, reqPath string, query url.Values) *http.Response {
+	t.Helper()
+
+	publicURL, err := url.Parse(publicEndpoint)
+	if err != nil {
+		t.Fatalf("parse public endpoint: %v", err)
+	}
+	u := *publicURL
+	u.Path = strings.TrimSuffix(publicURL.Path, "/") + reqPath
+
+	q := make(url.Values)
+	for k, v := range query {
+		q[k] = v
+	}
+	q.Set("X-Amz-Expires", "900")
+	u.RawQuery = q.Encode()
+
+	signReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		t.Fatalf("create sign request: %v", err)
+	}
+
+	signer := v4.NewSigner(func(o *v4.SignerOptions) {
+		o.DisableURIPathEscaping = true
+	})
+	signedURI, _, err := signer.PresignHTTP(
+		ctx,
+		aws.Credentials{
+			AccessKeyID:     localAccessKey,
+			SecretAccessKey: localSecretKey,
+		},
+		signReq,
+		"UNSIGNED-PAYLOAD",
+		"s3",
+		"us-east-1",
+		time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatalf("presign gateway request: %v", err)
+	}
+	signedURL, err := url.Parse(signedURI)
+	if err != nil {
+		t.Fatalf("parse signed URI: %v", err)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, gatewayURL+reqPath+"?"+signedURL.RawQuery, nil)
+	if err != nil {
+		t.Fatalf("create gateway request: %v", err)
+	}
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("request gateway %s: %v", reqPath, err)
+	}
+	return response
 }
 
 func waitFor(ctx context.Context, operation func(context.Context) error) error {
