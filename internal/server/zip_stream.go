@@ -2,7 +2,6 @@ package server
 
 import (
 	"archive/zip"
-	"compress/flate"
 	"io"
 	"path"
 	"strings"
@@ -34,11 +33,6 @@ func matchZipFiles(files []*zip.File, subpath string) (matched []*zip.File, sing
 
 func writeZipSubset(w io.Writer, files []*zip.File, subpath string, singleFile bool) error {
 	zipWriter := zip.NewWriter(w)
-	// Set DEFLATE compression level to 9 (flate.BestCompression). Matches NOMAD Python level.
-	zipWriter.RegisterCompressor(zip.Deflate, func(out io.Writer) (io.WriteCloser, error) {
-		return flate.NewWriter(out, flate.BestCompression)
-	})
-
 	cleanPath := strings.ReplaceAll(strings.Trim(subpath, "/\\"), "\\", "/")
 	dirPrefix := cleanPath + "/"
 

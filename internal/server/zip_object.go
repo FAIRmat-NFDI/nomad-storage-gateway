@@ -1,6 +1,8 @@
 package server
 
 import (
+	"archive/zip"
+	"context"
 	"fmt"
 	"net/http"
 	"path"
@@ -27,7 +29,38 @@ func (e *zipResolveError) Error() string {
 	return e.message
 }
 
-func (s *Server) resolveZipObject(entry *filer_pb.Entry, directory, name string) (*zipObject, error) {
+func (s *Server) resolveZipObject(ctx context.Context, uploadID string) (*zipObject, error) {
+	prefixSize := s.cfg.SeaweedFS.PrefixSize
+	if prefixSize <= 0 {
+		prefixSize = 2
+	}
+	if uploadID == "" || len(uploadID) <= prefixSize {
+		return nil, &zipResolveError{status: http.StatusBadRequest, message: "missing/invalid upload id"}
+	}
+
+	directory := fmt.Sprintf(
+		"/buckets/%s/%s/%s",
+		s.cfg.SeaweedFS.S3Bucket,
+		uploadID[:prefixSize],
+		uploadID,
+	)
+	filerReq := &filer_pb.LookupDirectoryEntryRequest{
+		// SeaweedFS Filer Path (for gRPC metadata check)
+		Directory: directory,
+		// This is the name used in NOMAD for the zipped upload
+		Name: "raw-public.plain.zip",
+	}
+
+	if s.filerClient == nil {
+		return nil, &zipResolveError{status: http.StatusInternalServerError, message: "filer client is not configured"}
+	}
+
+	filerResp, err := s.filerClient.LookupDirectoryEntry(ctx, filerReq)
+	if err != nil {
+		// File not found in Filer -> return 404
+		return nil, &zipResolveError{status: http.StatusNotFound, message: "upload zip not found"}
+	}
+	entry := filerResp.GetEntry()
 	if entry == nil {
 		return nil, &zipResolveError{status: http.StatusBadGateway, message: "invalid filer response"}
 	}
@@ -48,6 +81,7 @@ func (s *Server) resolveZipObject(entry *filer_pb.Entry, directory, name string)
 		bucket = s.cfg.SeaweedFS.S3Bucket
 	}
 
+	name := filerReq.GetName()
 	key, err := objectKey(directory, name, s.cfg.SeaweedFS.S3Bucket)
 	if err != nil {
 		return nil, &zipResolveError{status: http.StatusBadRequest, message: "invalid directory key"}
@@ -70,6 +104,32 @@ func (s *Server) resolveZipObject(entry *filer_pb.Entry, directory, name string)
 		key:    key,
 		size:   size,
 	}, nil
+}
+
+func (s *Server) getOrLoadZipReader(obj *zipObject) (*zip.Reader, error) {
+	cacheKey := obj.bucket + "/" + obj.key
+	if cached, ok := s.zipCache.Load(cacheKey); ok {
+		return cached.(*zip.Reader), nil
+	}
+	// Merge concurrent requests for the same uncached upload:
+	res, err, _ := s.sfGroup.Do(cacheKey, func() (any, error) {
+		if cached, ok := s.zipCache.Load(cacheKey); ok {
+			return cached, nil
+		}
+		// Use background context so the reader survives beyond any single HTTP request
+		reader := newZipObjectReader(context.Background(), obj.client, obj.bucket, obj.key)
+		zr, err := zip.NewReader(reader, obj.size)
+		if err != nil {
+			return nil, err
+		}
+		s.zipCache.Store(cacheKey, zr)
+		return zr, nil
+
+	})
+	if err != nil {
+		return nil, err
+	}
+	return res.(*zip.Reader), nil
 }
 
 func isCloudFresh(entry *filer_pb.Entry, configuredProviders map[string]config.ObjectStore) bool {

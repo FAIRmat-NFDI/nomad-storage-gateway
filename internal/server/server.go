@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	config "github.com/FAIRmat-NFDI/nomad-storage-gateway/internal/config"
@@ -19,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"golang.org/x/sync/singleflight"
 )
 
 type Server struct {
@@ -28,6 +30,8 @@ type Server struct {
 	signer         *v4.Signer
 	publicEndpoint *url.URL
 	now            func() time.Time
+	zipCache       sync.Map
+	sfGroup        singleflight.Group
 }
 
 // centralSeaweedFSProvider is reserved for the gateway's internal SeaweedFS store.
@@ -105,6 +109,7 @@ func newRouter(cfg config.Config, filerClient filerLookupClient, now func() time
 		r.Use(s.requirePresignedQuery)
 		r.Get("/zip/{upload_id}", s.zip)
 		r.Get("/zip/{upload_id}/*", s.zip)
+		r.Get("/file/{upload_id}/*", s.file)
 	})
 	return r, nil
 }

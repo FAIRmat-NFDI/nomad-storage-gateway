@@ -1,7 +1,6 @@
 package server
 
 import (
-	"archive/zip"
 	"context"
 	"errors"
 	"fmt"
@@ -27,41 +26,7 @@ type filerLookupClient interface {
 func (s *Server) zip(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	uploadID := chi.URLParam(r, "upload_id")
-	prefixSize := s.cfg.SeaweedFS.PrefixSize
-	if prefixSize <= 0 {
-		prefixSize = 2
-	}
-	if uploadID == "" || len(uploadID) <= prefixSize {
-		http.Error(w, "missing/invalid upload id", http.StatusBadRequest)
-		return
-	}
-
-	directory := fmt.Sprintf(
-		"/buckets/%s/%s/%s",
-		s.cfg.SeaweedFS.S3Bucket,
-		uploadID[:prefixSize],
-		uploadID,
-	)
-	filerReq := &filer_pb.LookupDirectoryEntryRequest{
-		// SeaweedFS Filer Path (for gRPC metadata check)
-		Directory: directory,
-		// This is the name used in NOMAD for the zipped upload
-		Name: "raw-public.plain.zip",
-	}
-
-	if s.filerClient == nil {
-		http.Error(w, "filer client is not configured", http.StatusInternalServerError)
-		return
-	}
-
-	filerResp, err := s.filerClient.LookupDirectoryEntry(ctx, filerReq)
-	if err != nil {
-		// File not found in Filer -> return 404
-		http.Error(w, "upload zip not found", http.StatusNotFound)
-		return
-	}
-
-	obj, err := s.resolveZipObject(filerResp.GetEntry(), directory, filerReq.GetName())
+	obj, err := s.resolveZipObject(ctx, uploadID)
 	if err != nil {
 		var resolveErr *zipResolveError
 		if errors.As(err, &resolveErr) {
@@ -90,8 +55,7 @@ func (s *Server) streamSubdirZip(w http.ResponseWriter, r *http.Request, obj *zi
 		return
 	}
 
-	reader := newZipObjectReader(r.Context(), obj.client, obj.bucket, obj.key)
-	zipReader, err := zip.NewReader(reader, obj.size)
+	zipReader, err := s.getOrLoadZipReader(obj)
 	if err != nil {
 		http.Error(w, "failed to open zip", http.StatusBadGateway)
 		return
