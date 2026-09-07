@@ -2,6 +2,7 @@ package server
 
 import (
 	"archive/zip"
+	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
@@ -57,6 +58,12 @@ func (s *Server) file(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	decompress, err := parseBoolQuery(query.Get("decompress"))
+	if err != nil {
+		http.Error(w, "invalid decompress value", http.StatusBadRequest)
+		return
+	}
+
 	obj, err := s.resolveZipObject(ctx, uploadID)
 	if err != nil {
 		var resolveErr *zipResolveError
@@ -67,10 +74,21 @@ func (s *Server) file(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	s.streamFile(w, r, obj, subpath, offset, length)
+	s.streamFile(w, r, obj, subpath, offset, length, decompress)
 }
 
-func (s *Server) streamFile(w http.ResponseWriter, r *http.Request, obj *zipObject, subpath string, offset int64, length int64) {
+func parseBoolQuery(value string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "0", "false", "no", "off":
+		return false, nil
+	case "1", "true", "yes", "on":
+		return true, nil
+	default:
+		return false, fmt.Errorf("invalid bool %q", value)
+	}
+}
+
+func (s *Server) streamFile(w http.ResponseWriter, r *http.Request, obj *zipObject, subpath string, offset int64, length int64, decompress bool) {
 	if subpath == "" {
 		http.Error(w, "invalid subpath", http.StatusBadRequest)
 		return
@@ -92,49 +110,41 @@ func (s *Server) streamFile(w http.ResponseWriter, r *http.Request, obj *zipObje
 		return
 	}
 
+	cleanPath := strings.ReplaceAll(strings.Trim(subpath, "/\\"), "\\", "/")
+	decompressGzip := decompress && strings.HasSuffix(cleanPath, ".gz")
+
 	src := matched[0]
-	uncompressedSize := int64(src.UncompressedSize64)
-	if offset > uncompressedSize {
+	if !decompressGzip && offset > int64(src.UncompressedSize64) {
 		http.Error(w, "Invalid offset provided.", http.StatusBadRequest)
 		return
 	}
 
-	var source io.Reader
-	if src.Method == zip.Deflate {
-		rc, err := src.Open()
+	source, closeMember, err := openZipMember(src)
+	if err != nil {
+		http.Error(w, "failed to open source file", http.StatusInternalServerError)
+		return
+	}
+	defer closeMember()
+
+	if decompressGzip {
+		gz, err := gzip.NewReader(source)
 		if err != nil {
-			http.Error(w, "failed to open source file", http.StatusInternalServerError)
+			http.Error(w, "failed to decompress gzip", http.StatusBadRequest)
 			return
 		}
-		defer rc.Close()
-		source = rc
-		if offset > 0 {
-			if _, err := io.CopyN(io.Discard, source, offset); err != nil {
-				http.Error(w, "Invalid offset provided.", http.StatusBadRequest)
-				return
-			}
-		}
-	} else {
-		// OpenRaw returns *io.SectionReader which implements io.Seeker
-		raw, err := src.OpenRaw()
-		if err != nil {
-			http.Error(w, "failed to open source file", http.StatusInternalServerError)
-			return
-		}
-		if c, ok := raw.(io.Closer); ok {
-			defer c.Close()
-		}
-		source = raw
-		if offset > 0 {
-			seeker, ok := source.(io.Seeker)
-			if !ok {
-				http.Error(w, "Invalid offset provided.", http.StatusBadRequest)
-				return
-			}
+		defer gz.Close()
+		source = gz
+	}
+
+	if offset > 0 {
+		if seeker, ok := source.(io.Seeker); ok {
 			if _, err := seeker.Seek(offset, io.SeekStart); err != nil {
 				http.Error(w, "Invalid offset provided.", http.StatusBadRequest)
 				return
 			}
+		} else if _, err := io.CopyN(io.Discard, source, offset); err != nil {
+			http.Error(w, "Invalid offset provided.", http.StatusBadRequest)
+			return
 		}
 	}
 
@@ -143,7 +153,6 @@ func (s *Server) streamFile(w http.ResponseWriter, r *http.Request, obj *zipObje
 		output = io.LimitReader(source, length)
 	}
 
-	cleanPath := strings.ReplaceAll(strings.Trim(subpath, "/\\"), "\\", "/")
 	filename := path.Base(cleanPath)
 	contentType := "application/octet-stream"
 	if offset == 0 && length == -1 {
@@ -158,4 +167,25 @@ func (s *Server) streamFile(w http.ResponseWriter, r *http.Request, obj *zipObje
 	)
 
 	_, _ = io.Copy(w, output)
+}
+
+func openZipMember(src *zip.File) (io.Reader, func(), error) {
+	if src.Method == zip.Deflate {
+		rc, err := src.Open()
+		if err != nil {
+			return nil, nil, err
+		}
+		return rc, func() { _ = rc.Close() }, nil
+	}
+
+	// OpenRaw returns *io.SectionReader which implements io.Seeker
+	raw, err := src.OpenRaw()
+	if err != nil {
+		return nil, nil, err
+	}
+	closeFn := func() {}
+	if c, ok := raw.(io.Closer); ok {
+		closeFn = func() { _ = c.Close() }
+	}
+	return raw, closeFn, nil
 }
