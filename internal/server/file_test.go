@@ -2,7 +2,11 @@ package server
 
 import (
 	"archive/zip"
+	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +15,7 @@ import (
 	"time"
 
 	"github.com/FAIRmat-NFDI/nomad-storage-gateway/internal/config"
+	"github.com/ulikunitz/xz"
 )
 
 const fileTestUploadID = "abcdef"
@@ -306,5 +311,240 @@ func TestGetOrLoadZipReaderConcurrentLoadsShareReader(t *testing.T) {
 				t.Fatal("expected concurrent loads to share the same *zip.Reader")
 			}
 		}
+	}
+}
+
+func gzipBytes(t *testing.T, data []byte) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	writer := gzip.NewWriter(&buf)
+	if _, err := writer.Write(data); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func xzBytes(t *testing.T, data []byte) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	writer, err := xz.NewWriter(&buf)
+	if err != nil {
+		t.Fatalf("xz.NewWriter: %v", err)
+	}
+	if _, err := writer.Write(data); err != nil {
+		t.Fatalf("xz write: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("xz close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func buildZipWithNamedBytes(t *testing.T, name string, data []byte, method zipMethod) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	w.RegisterCompressor(zip.Deflate, func(out io.Writer) (io.WriteCloser, error) {
+		return flate.NewWriter(out, flate.BestCompression)
+	})
+	header := &zip.FileHeader{Name: name, Method: zip.Store}
+	if method == zipDeflate {
+		header.Method = zip.Deflate
+	}
+	fw, err := w.CreateHeader(header)
+	if err != nil {
+		t.Fatalf("create zip entry %q: %v", name, err)
+	}
+	if _, err := fw.Write(data); err != nil {
+		t.Fatalf("write zip entry %q: %v", name, err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestFileEndpointGzipDecompress(t *testing.T) {
+	plain := []byte("hello gzip payload")
+	gzPayload := gzipBytes(t, plain)
+	zipData := buildZipWithNamedBytes(t, "data/notes.json.gz", gzPayload, zipStore)
+	_, router, cfg := newZipStreamingRouter(t, zipData)
+	path := "/file/" + fileTestUploadID + "/data/notes.json.gz"
+
+	t.Run("decompress true returns gunzipped bytes", func(t *testing.T) {
+		rec := serveFile(t, router, cfg, path, url.Values{"decompress": {"true"}})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if got := rec.Body.String(); got != string(plain) {
+			t.Fatalf("body = %q, want %q", got, plain)
+		}
+		if got := rec.Header().Get("Content-Disposition"); !strings.Contains(got, `filename="notes.json.gz"`) {
+			t.Fatalf("Content-Disposition = %q, want filename=\"notes.json.gz\"", got)
+		}
+	})
+
+	t.Run("without decompress returns gzip bytes", func(t *testing.T) {
+		rec := serveFile(t, router, cfg, path, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+		}
+		if rec.Body.String() == string(plain) {
+			t.Fatal("body was decompressed without decompress=true")
+		}
+		if !bytes.Equal(rec.Body.Bytes(), gzPayload) {
+			t.Fatalf("body is not the original gzip payload")
+		}
+	})
+
+	t.Run("offset and length apply after gunzip", func(t *testing.T) {
+		rec := serveFile(t, router, cfg, path, url.Values{
+			"decompress": {"true"},
+			"offset":     {"6"},
+			"length":     {"4"},
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if got := rec.Body.String(); got != "gzip" {
+			t.Fatalf("body = %q, want %q", got, "gzip")
+		}
+		if got := rec.Header().Get("Content-Type"); got != "application/octet-stream" {
+			t.Fatalf("Content-Type = %q, want application/octet-stream", got)
+		}
+	})
+}
+
+func TestFileEndpointGzipDecompressDeflateMember(t *testing.T) {
+	plain := []byte("deflated gzip member")
+	zipData := buildZipWithNamedBytes(t, "out.vasp.gz", gzipBytes(t, plain), zipDeflate)
+	_, router, cfg := newZipStreamingRouter(t, zipData)
+
+	rec := serveFile(t, router, cfg, "/file/"+fileTestUploadID+"/out.vasp.gz", url.Values{"decompress": {"1"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != string(plain) {
+		t.Fatalf("body = %q, want %q", got, plain)
+	}
+}
+
+func TestFileEndpointXZDecompress(t *testing.T) {
+	plain := []byte("hello xz payload")
+	xzPayload := xzBytes(t, plain)
+	zipData := buildZipWithNamedBytes(t, "data/notes.json.xz", xzPayload, zipStore)
+	_, router, cfg := newZipStreamingRouter(t, zipData)
+	path := "/file/" + fileTestUploadID + "/data/notes.json.xz"
+
+	t.Run("decompress true returns xz-decoded bytes", func(t *testing.T) {
+		rec := serveFile(t, router, cfg, path, url.Values{"decompress": {"true"}})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if got := rec.Body.String(); got != string(plain) {
+			t.Fatalf("body = %q, want %q", got, plain)
+		}
+		if got := rec.Header().Get("Content-Disposition"); !strings.Contains(got, `filename="notes.json.xz"`) {
+			t.Fatalf("Content-Disposition = %q, want filename=\"notes.json.xz\"", got)
+		}
+	})
+
+	t.Run("without decompress returns xz bytes", func(t *testing.T) {
+		rec := serveFile(t, router, cfg, path, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+		}
+		if rec.Body.String() == string(plain) {
+			t.Fatal("body was decompressed without decompress=true")
+		}
+		if !bytes.Equal(rec.Body.Bytes(), xzPayload) {
+			t.Fatal("body is not the original xz payload")
+		}
+	})
+
+	t.Run("offset and length apply after xz decode", func(t *testing.T) {
+		rec := serveFile(t, router, cfg, path, url.Values{
+			"decompress": {"true"},
+			"offset":     {"6"},
+			"length":     {"2"},
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if got := rec.Body.String(); got != "xz" {
+			t.Fatalf("body = %q, want %q", got, "xz")
+		}
+	})
+}
+
+func TestFileEndpointXZDecompressDeflateMember(t *testing.T) {
+	plain := []byte("deflated xz member")
+	zipData := buildZipWithNamedBytes(t, "out.vasp.xz", xzBytes(t, plain), zipDeflate)
+	_, router, cfg := newZipStreamingRouter(t, zipData)
+
+	rec := serveFile(t, router, cfg, "/file/"+fileTestUploadID+"/out.vasp.xz", url.Values{"decompress": {"1"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != string(plain) {
+		t.Fatalf("body = %q, want %q", got, plain)
+	}
+}
+
+func TestFileEndpointDecompressIgnoredForPlainFiles(t *testing.T) {
+	zipData := defaultFileZip(t)
+	_, router, cfg := newZipStreamingRouter(t, zipData)
+
+	rec := serveFile(t, router, cfg, "/file/"+fileTestUploadID+"/vasp/OUTCAR", url.Values{"decompress": {"true"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "content-vasp/OUTCAR" {
+		t.Fatalf("body = %q, want uncompressed zip member bytes", got)
+	}
+}
+
+func TestFileEndpointInvalidGzip(t *testing.T) {
+	zipData := buildZipWithNamedBytes(t, "broken.gz", []byte("not gzip"), zipStore)
+	_, router, cfg := newZipStreamingRouter(t, zipData)
+
+	rec := serveFile(t, router, cfg, "/file/"+fileTestUploadID+"/broken.gz", url.Values{"decompress": {"true"}})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "failed to decompress gzip") {
+		t.Fatalf("body = %q, want gzip error", rec.Body.String())
+	}
+}
+
+func TestFileEndpointInvalidXZ(t *testing.T) {
+	zipData := buildZipWithNamedBytes(t, "broken.xz", []byte("not xz"), zipStore)
+	_, router, cfg := newZipStreamingRouter(t, zipData)
+
+	rec := serveFile(t, router, cfg, "/file/"+fileTestUploadID+"/broken.xz", url.Values{"decompress": {"true"}})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "failed to decompress xz") {
+		t.Fatalf("body = %q, want xz error", rec.Body.String())
+	}
+}
+
+func TestFileEndpointInvalidDecompressValue(t *testing.T) {
+	zipData := defaultFileZip(t)
+	_, router, cfg := newZipStreamingRouter(t, zipData)
+
+	rec := serveFile(t, router, cfg, "/file/"+fileTestUploadID+"/vasp/OUTCAR", url.Values{"decompress": {"maybe"}})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid decompress value") {
+		t.Fatalf("body = %q, want invalid decompress value", rec.Body.String())
 	}
 }

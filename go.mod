@@ -15,6 +15,7 @@ require (
 	github.com/knadh/koanf/providers/file v1.2.1
 	github.com/knadh/koanf/v2 v2.3.6
 	github.com/seaweedfs/seaweedfs v0.0.0-20260830180853-d3b8030a69de
+	github.com/ulikunitz/xz v0.5.16
 	golang.org/x/sync v0.22.0
 	google.golang.org/grpc v1.84.0-dev.0.20260723093437-b6eac429d7b6
 )
