@@ -166,13 +166,18 @@ func TestPresignedURL_Subpath(t *testing.T) {
 		t.Fatalf("NewRouter() error = %v", err)
 	}
 
-	// Subpaths are currently not implemented (returns 501), but must pass presigned verification
 	req := buildSignedRequest(t, cfg, http.MethodGet, "/zip/abcdef/raw/data.txt", signOptions{})
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want %d (Not Implemented); body = %q", rec.Code, http.StatusNotImplemented, rec.Body.String())
+	if rec.Code == http.StatusNotImplemented {
+		t.Fatalf("status = %d, subpath streaming should be implemented; body = %q", rec.Code, rec.Body.String())
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid zip size response") {
+		t.Fatalf("body = %q, want it to contain %q", rec.Body.String(), "invalid zip size response")
 	}
 }
 

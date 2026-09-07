@@ -24,7 +24,7 @@ import (
 type Server struct {
 	cfg            config.Config
 	filerClient    filerLookupClient
-	presigners     map[string]*s3.PresignClient
+	clients        map[string]*s3.Client
 	signer         *v4.Signer
 	publicEndpoint *url.URL
 	now            func() time.Time
@@ -68,13 +68,13 @@ func newRouter(cfg config.Config, filerClient filerLookupClient, now func() time
 		SecretKey: cfg.SeaweedFS.S3SecretKey,
 	}
 
-	presigners := make(map[string]*s3.PresignClient)
+	clients := make(map[string]*s3.Client)
 	for name, provider := range providers {
-		presigner, err := newPresigner(ctx, provider)
+		client, err := newClient(ctx, provider)
 		if err != nil {
-			return nil, fmt.Errorf("create presigner for %q: %w", name, err)
+			return nil, fmt.Errorf("create client for %q: %w", name, err)
 		}
-		presigners[name] = presigner
+		clients[name] = client
 
 	}
 	signer := v4.NewSigner(func(o *v4.SignerOptions) {
@@ -88,7 +88,7 @@ func newRouter(cfg config.Config, filerClient filerLookupClient, now func() time
 	s := &Server{
 		cfg:            cfg,
 		filerClient:    filerClient,
-		presigners:     presigners,
+		clients:        clients,
 		signer:         signer,
 		publicEndpoint: publicEndpoint,
 		now:            now,

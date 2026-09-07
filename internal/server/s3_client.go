@@ -10,10 +10,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-func newPresigner(
+func newClient(
 	ctx context.Context,
 	provider config.ObjectStore,
-) (*s3.PresignClient, error) {
+) (*s3.Client, error) {
 	region := provider.Region
 	if region == "" {
 		// aws library always requires a region
@@ -39,5 +39,5 @@ func newPresigner(
 		options.UsePathStyle = true
 	})
 
-	return s3.NewPresignClient(client), nil
+	return client, nil
 }

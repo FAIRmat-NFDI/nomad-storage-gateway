@@ -215,13 +215,13 @@ func TestZipEndpoint(t *testing.T) {
 			wantCalls:      1,
 		},
 		{
-			name:        "zip subpath",
+			name:        "zip subpath without zip size",
 			requestPath: "/zip/" + uploadID + "/input/INCAR",
 			filer: &fakeFilerClient{response: &filer_pb.LookupDirectoryEntryResponse{
 				Entry: &filer_pb.Entry{Name: "raw-public.plain.zip"},
 			}},
-			wantStatus:   http.StatusNotImplemented,
-			wantBodyPart: "zipped subdirectories are not implemented",
+			wantStatus:   http.StatusBadGateway,
+			wantBodyPart: "invalid zip size response",
 			wantCalls:    1,
 		},
 		{
