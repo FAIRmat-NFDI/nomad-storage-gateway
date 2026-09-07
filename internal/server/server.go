@@ -1,6 +1,7 @@
 package server
 
 import (
+	"archive/zip"
 	"context"
 	"crypto/subtle"
 	"errors"
@@ -10,7 +11,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	config "github.com/FAIRmat-NFDI/nomad-storage-gateway/internal/config"
@@ -20,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	lru "github.com/hashicorp/golang-lru/v2"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -30,7 +31,7 @@ type Server struct {
 	signer         *v4.Signer
 	publicEndpoint *url.URL
 	now            func() time.Time
-	zipCache       sync.Map
+	zipCache       *lru.Cache[string, *zip.Reader]
 	sfGroup        singleflight.Group
 }
 
@@ -89,6 +90,11 @@ func newRouter(cfg config.Config, filerClient filerLookupClient, now func() time
 		now = func() time.Time { return time.Now().UTC() }
 	}
 
+	zipCache, err := lru.New[string, *zip.Reader](1000)
+	if err != nil {
+		return nil, fmt.Errorf("create zip cache: %w", err)
+	}
+
 	s := &Server{
 		cfg:            cfg,
 		filerClient:    filerClient,
@@ -96,6 +102,7 @@ func newRouter(cfg config.Config, filerClient filerLookupClient, now func() time
 		signer:         signer,
 		publicEndpoint: publicEndpoint,
 		now:            now,
+		zipCache:       zipCache,
 	}
 	r := chi.NewRouter()
 

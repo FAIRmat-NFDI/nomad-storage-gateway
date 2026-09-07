@@ -108,13 +108,17 @@ func (s *Server) resolveZipObject(ctx context.Context, uploadID string) (*zipObj
 
 func (s *Server) getOrLoadZipReader(obj *zipObject) (*zip.Reader, error) {
 	cacheKey := obj.bucket + "/" + obj.key
-	if cached, ok := s.zipCache.Load(cacheKey); ok {
-		return cached.(*zip.Reader), nil
+	if s.zipCache != nil {
+		if cached, ok := s.zipCache.Get(cacheKey); ok {
+			return cached, nil
+		}
 	}
 	// Merge concurrent requests for the same uncached upload:
 	res, err, _ := s.sfGroup.Do(cacheKey, func() (any, error) {
-		if cached, ok := s.zipCache.Load(cacheKey); ok {
-			return cached, nil
+		if s.zipCache != nil {
+			if cached, ok := s.zipCache.Get(cacheKey); ok {
+				return cached, nil
+			}
 		}
 		// Use background context so the reader survives beyond any single HTTP request
 		reader := newZipObjectReader(context.Background(), obj.client, obj.bucket, obj.key)
@@ -122,9 +126,10 @@ func (s *Server) getOrLoadZipReader(obj *zipObject) (*zip.Reader, error) {
 		if err != nil {
 			return nil, err
 		}
-		s.zipCache.Store(cacheKey, zr)
+		if s.zipCache != nil {
+			s.zipCache.Add(cacheKey, zr)
+		}
 		return zr, nil
-
 	})
 	if err != nil {
 		return nil, err

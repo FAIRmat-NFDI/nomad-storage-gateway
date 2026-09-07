@@ -9,11 +9,13 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.109.1
 	github.com/aws/smithy-go v1.28.1
 	github.com/go-chi/chi/v5 v5.3.2
+	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/knadh/koanf/parsers/yaml v1.1.1
 	github.com/knadh/koanf/providers/env v1.1.0
 	github.com/knadh/koanf/providers/file v1.2.1
 	github.com/knadh/koanf/v2 v2.3.6
 	github.com/seaweedfs/seaweedfs v0.0.0-20260830180853-d3b8030a69de
+	golang.org/x/sync v0.22.0
 	google.golang.org/grpc v1.84.0-dev.0.20260723093437-b6eac429d7b6
 )
 
@@ -62,7 +64,6 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/image v0.44.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260807164820-c8921c73eeea // indirect
