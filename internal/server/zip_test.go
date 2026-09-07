@@ -59,7 +59,7 @@ func testConfig() config.Config {
 	}
 }
 
-func signTestRequest(t *testing.T, cfg config.Config, method, requestPath string, signingTime time.Time, expires time.Duration) *http.Request {
+func signTestRequest(t *testing.T, cfg config.Config, method, requestPath string, signingTime time.Time, expires time.Duration, extraQuery ...url.Values) *http.Request {
 	t.Helper()
 
 	publicURL, err := url.Parse(cfg.SeaweedFS.PublicEndpoint)
@@ -71,6 +71,13 @@ func signTestRequest(t *testing.T, cfg config.Config, method, requestPath string
 	u.Path = strings.TrimSuffix(publicURL.Path, "/") + requestPath
 	q := u.Query()
 	q.Set("X-Amz-Expires", strconv.FormatInt(int64(expires.Seconds()), 10))
+	if len(extraQuery) > 0 && extraQuery[0] != nil {
+		for key, values := range extraQuery[0] {
+			for _, value := range values {
+				q.Set(key, value)
+			}
+		}
+	}
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequest(method, u.String(), nil)
@@ -215,13 +222,13 @@ func TestZipEndpoint(t *testing.T) {
 			wantCalls:      1,
 		},
 		{
-			name:        "zip subpath",
+			name:        "zip subpath without zip size",
 			requestPath: "/zip/" + uploadID + "/input/INCAR",
 			filer: &fakeFilerClient{response: &filer_pb.LookupDirectoryEntryResponse{
 				Entry: &filer_pb.Entry{Name: "raw-public.plain.zip"},
 			}},
-			wantStatus:   http.StatusNotImplemented,
-			wantBodyPart: "zipped subdirectories are not implemented",
+			wantStatus:   http.StatusBadGateway,
+			wantBodyPart: "invalid zip size response",
 			wantCalls:    1,
 		},
 		{

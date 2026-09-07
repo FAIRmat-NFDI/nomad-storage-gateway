@@ -1,6 +1,7 @@
 package server
 
 import (
+	"archive/zip"
 	"context"
 	"crypto/subtle"
 	"errors"
@@ -19,27 +20,32 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	lru "github.com/hashicorp/golang-lru/v2"
+	"golang.org/x/sync/singleflight"
 )
 
 type Server struct {
 	cfg            config.Config
 	filerClient    filerLookupClient
-	presigners     map[string]*s3.PresignClient
+	clients        map[string]*s3.Client
 	signer         *v4.Signer
 	publicEndpoint *url.URL
 	now            func() time.Time
+	zipCache       *lru.Cache[string, *zip.Reader]
+	sfGroup        singleflight.Group
 }
 
 // centralSeaweedFSProvider is reserved for the gateway's internal SeaweedFS store.
 const centralSeaweedFSProvider = "central_seaweedfs"
 
 func NewRouter(cfg config.Config, filerClient filerLookupClient) (http.Handler, error) {
-	return newRouter(cfg, filerClient, nil)
+	_, handler, err := newRouter(cfg, filerClient, nil)
+	return handler, err
 }
 
-func newRouter(cfg config.Config, filerClient filerLookupClient, now func() time.Time) (http.Handler, error) {
+func newRouter(cfg config.Config, filerClient filerLookupClient, now func() time.Time) (*Server, http.Handler, error) {
 	if _, ok := cfg.Providers[centralSeaweedFSProvider]; ok {
-		return nil, fmt.Errorf("provider name %q is reserved", centralSeaweedFSProvider)
+		return nil, nil, fmt.Errorf("provider name %q is reserved", centralSeaweedFSProvider)
 	}
 
 	var publicEndpoint *url.URL
@@ -49,7 +55,7 @@ func newRouter(cfg config.Config, filerClient filerLookupClient, now func() time
 			if err == nil {
 				err = errors.New("missing scheme or host")
 			}
-			return nil, fmt.Errorf("invalid seaweedfs.public_endpoint %q: %w", cfg.SeaweedFS.PublicEndpoint, err)
+			return nil, nil, fmt.Errorf("invalid seaweedfs.public_endpoint %q: %w", cfg.SeaweedFS.PublicEndpoint, err)
 		}
 		publicEndpoint = parsed
 	}
@@ -68,13 +74,13 @@ func newRouter(cfg config.Config, filerClient filerLookupClient, now func() time
 		SecretKey: cfg.SeaweedFS.S3SecretKey,
 	}
 
-	presigners := make(map[string]*s3.PresignClient)
+	clients := make(map[string]*s3.Client)
 	for name, provider := range providers {
-		presigner, err := newPresigner(ctx, provider)
+		client, err := newClient(ctx, provider)
 		if err != nil {
-			return nil, fmt.Errorf("create presigner for %q: %w", name, err)
+			return nil, nil, fmt.Errorf("create client for %q: %w", name, err)
 		}
-		presigners[name] = presigner
+		clients[name] = client
 
 	}
 	signer := v4.NewSigner(func(o *v4.SignerOptions) {
@@ -85,13 +91,19 @@ func newRouter(cfg config.Config, filerClient filerLookupClient, now func() time
 		now = func() time.Time { return time.Now().UTC() }
 	}
 
+	zipCache, err := lru.New[string, *zip.Reader](1000)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create zip cache: %w", err)
+	}
+
 	s := &Server{
 		cfg:            cfg,
 		filerClient:    filerClient,
-		presigners:     presigners,
+		clients:        clients,
 		signer:         signer,
 		publicEndpoint: publicEndpoint,
 		now:            now,
+		zipCache:       zipCache,
 	}
 	r := chi.NewRouter()
 
@@ -105,8 +117,9 @@ func newRouter(cfg config.Config, filerClient filerLookupClient, now func() time
 		r.Use(s.requirePresignedQuery)
 		r.Get("/zip/{upload_id}", s.zip)
 		r.Get("/zip/{upload_id}/*", s.zip)
+		r.Get("/file/{upload_id}/*", s.file)
 	})
-	return r, nil
+	return s, r, nil
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {

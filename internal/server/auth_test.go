@@ -136,7 +136,7 @@ func TestPresignedURL_Boto3CannedVector(t *testing.T) {
 	mockNow := cannedDate.Add(30 * time.Second) // 30s after signing
 
 	cfg := testConfig()
-	router, err := newRouter(cfg, testFilerSuccess(), func() time.Time { return mockNow })
+	_, router, err := newRouter(cfg, testFilerSuccess(), func() time.Time { return mockNow })
 	if err != nil {
 		t.Fatalf("newRouter() error = %v", err)
 	}
@@ -166,13 +166,34 @@ func TestPresignedURL_Subpath(t *testing.T) {
 		t.Fatalf("NewRouter() error = %v", err)
 	}
 
-	// Subpaths are currently not implemented (returns 501), but must pass presigned verification
 	req := buildSignedRequest(t, cfg, http.MethodGet, "/zip/abcdef/raw/data.txt", signOptions{})
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want %d (Not Implemented); body = %q", rec.Code, http.StatusNotImplemented, rec.Body.String())
+	if rec.Code == http.StatusNotImplemented {
+		t.Fatalf("status = %d, subpath streaming should be implemented; body = %q", rec.Code, rec.Body.String())
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid zip size response") {
+		t.Fatalf("body = %q, want it to contain %q", rec.Body.String(), "invalid zip size response")
+	}
+}
+
+func TestPresignedURL_FileEndpointRequiresSignature(t *testing.T) {
+	cfg := testConfig()
+	router, err := NewRouter(cfg, testFilerSuccess())
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/file/abcdef/vasp/OUTCAR", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusOK {
+		t.Fatalf("status = %d, unsigned /file/ request must not succeed", rec.Code)
 	}
 }
 
