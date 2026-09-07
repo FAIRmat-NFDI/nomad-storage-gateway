@@ -39,12 +39,13 @@ type Server struct {
 const centralSeaweedFSProvider = "central_seaweedfs"
 
 func NewRouter(cfg config.Config, filerClient filerLookupClient) (http.Handler, error) {
-	return newRouter(cfg, filerClient, nil)
+	_, handler, err := newRouter(cfg, filerClient, nil)
+	return handler, err
 }
 
-func newRouter(cfg config.Config, filerClient filerLookupClient, now func() time.Time) (http.Handler, error) {
+func newRouter(cfg config.Config, filerClient filerLookupClient, now func() time.Time) (*Server, http.Handler, error) {
 	if _, ok := cfg.Providers[centralSeaweedFSProvider]; ok {
-		return nil, fmt.Errorf("provider name %q is reserved", centralSeaweedFSProvider)
+		return nil, nil, fmt.Errorf("provider name %q is reserved", centralSeaweedFSProvider)
 	}
 
 	var publicEndpoint *url.URL
@@ -54,7 +55,7 @@ func newRouter(cfg config.Config, filerClient filerLookupClient, now func() time
 			if err == nil {
 				err = errors.New("missing scheme or host")
 			}
-			return nil, fmt.Errorf("invalid seaweedfs.public_endpoint %q: %w", cfg.SeaweedFS.PublicEndpoint, err)
+			return nil, nil, fmt.Errorf("invalid seaweedfs.public_endpoint %q: %w", cfg.SeaweedFS.PublicEndpoint, err)
 		}
 		publicEndpoint = parsed
 	}
@@ -77,7 +78,7 @@ func newRouter(cfg config.Config, filerClient filerLookupClient, now func() time
 	for name, provider := range providers {
 		client, err := newClient(ctx, provider)
 		if err != nil {
-			return nil, fmt.Errorf("create client for %q: %w", name, err)
+			return nil, nil, fmt.Errorf("create client for %q: %w", name, err)
 		}
 		clients[name] = client
 
@@ -92,7 +93,7 @@ func newRouter(cfg config.Config, filerClient filerLookupClient, now func() time
 
 	zipCache, err := lru.New[string, *zip.Reader](1000)
 	if err != nil {
-		return nil, fmt.Errorf("create zip cache: %w", err)
+		return nil, nil, fmt.Errorf("create zip cache: %w", err)
 	}
 
 	s := &Server{
@@ -118,7 +119,7 @@ func newRouter(cfg config.Config, filerClient filerLookupClient, now func() time
 		r.Get("/zip/{upload_id}/*", s.zip)
 		r.Get("/file/{upload_id}/*", s.file)
 	})
-	return r, nil
+	return s, r, nil
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {

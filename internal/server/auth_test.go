@@ -136,7 +136,7 @@ func TestPresignedURL_Boto3CannedVector(t *testing.T) {
 	mockNow := cannedDate.Add(30 * time.Second) // 30s after signing
 
 	cfg := testConfig()
-	router, err := newRouter(cfg, testFilerSuccess(), func() time.Time { return mockNow })
+	_, router, err := newRouter(cfg, testFilerSuccess(), func() time.Time { return mockNow })
 	if err != nil {
 		t.Fatalf("newRouter() error = %v", err)
 	}
@@ -178,6 +178,22 @@ func TestPresignedURL_Subpath(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "invalid zip size response") {
 		t.Fatalf("body = %q, want it to contain %q", rec.Body.String(), "invalid zip size response")
+	}
+}
+
+func TestPresignedURL_FileEndpointRequiresSignature(t *testing.T) {
+	cfg := testConfig()
+	router, err := NewRouter(cfg, testFilerSuccess())
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/file/abcdef/vasp/OUTCAR", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusOK {
+		t.Fatalf("status = %d, unsigned /file/ request must not succeed", rec.Code)
 	}
 }
 

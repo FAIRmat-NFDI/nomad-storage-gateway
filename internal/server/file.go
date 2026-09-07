@@ -48,6 +48,15 @@ func (s *Server) file(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if offset < 0 {
+		http.Error(w, "Invalid offset provided.", http.StatusBadRequest)
+		return
+	}
+	if length <= 0 && length != -1 {
+		http.Error(w, "Invalid length provided.", http.StatusBadRequest)
+		return
+	}
+
 	obj, err := s.resolveZipObject(ctx, uploadID)
 	if err != nil {
 		var resolveErr *zipResolveError
@@ -78,27 +87,18 @@ func (s *Server) streamFile(w http.ResponseWriter, r *http.Request, obj *zipObje
 	}
 
 	matched, singleFile := matchZipFiles(zipReader.File, subpath)
-	if !singleFile {
+	if !singleFile || len(matched) == 0 {
 		http.Error(w, "invalid file path", http.StatusNotFound)
 		return
 	}
 
-	cleanPath := strings.ReplaceAll(strings.Trim(subpath, "/\\"), "\\", "/")
-	filename := path.Base(cleanPath)
-	contentType := "application/octet-stream"
-	if offset == 0 && length == -1 {
-		if extType := mime.TypeByExtension(path.Ext(filename)); extType != "" {
-			contentType = extType
-		}
-	}
-	w.Header().Set("Content-Type", contentType)
-
-	w.Header().Set(
-		"Content-Disposition",
-		fmt.Sprintf(`attachment; filename="%s"`, filename),
-	)
-
 	src := matched[0]
+	uncompressedSize := int64(src.UncompressedSize64)
+	if offset > uncompressedSize {
+		http.Error(w, "Invalid offset provided.", http.StatusBadRequest)
+		return
+	}
+
 	var source io.Reader
 	if src.Method == zip.Deflate {
 		rc, err := src.Open()
@@ -110,6 +110,7 @@ func (s *Server) streamFile(w http.ResponseWriter, r *http.Request, obj *zipObje
 		source = rc
 		if offset > 0 {
 			if _, err := io.CopyN(io.Discard, source, offset); err != nil {
+				http.Error(w, "Invalid offset provided.", http.StatusBadRequest)
 				return
 			}
 		}
@@ -125,24 +126,36 @@ func (s *Server) streamFile(w http.ResponseWriter, r *http.Request, obj *zipObje
 		}
 		source = raw
 		if offset > 0 {
-			if seeker, ok := source.(io.Seeker); ok {
-				if _, err := seeker.Seek(offset, io.SeekStart); err != nil {
-					return
-				}
-			} else {
-				if _, err := io.CopyN(io.Discard, source, offset); err != nil {
-					return
-				}
+			seeker, ok := source.(io.Seeker)
+			if !ok {
+				http.Error(w, "Invalid offset provided.", http.StatusBadRequest)
+				return
+			}
+			if _, err := seeker.Seek(offset, io.SeekStart); err != nil {
+				http.Error(w, "Invalid offset provided.", http.StatusBadRequest)
+				return
 			}
 		}
 	}
-	var output io.Reader = source
+
+	output := io.Reader(source)
 	if length >= 0 {
 		output = io.LimitReader(source, length)
 	}
 
-	_, err = io.Copy(w, output)
-	if err != nil {
-		http.Error(w, "failed to copy to stream", http.StatusInternalServerError)
+	cleanPath := strings.ReplaceAll(strings.Trim(subpath, "/\\"), "\\", "/")
+	filename := path.Base(cleanPath)
+	contentType := "application/octet-stream"
+	if offset == 0 && length == -1 {
+		if extType := mime.TypeByExtension(path.Ext(filename)); extType != "" {
+			contentType = extType
+		}
 	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set(
+		"Content-Disposition",
+		fmt.Sprintf(`attachment; filename="%s"`, filename),
+	)
+
+	_, _ = io.Copy(w, output)
 }

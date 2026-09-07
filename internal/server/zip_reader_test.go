@@ -183,7 +183,7 @@ func testConfigWithEndpoint(endpoint string) config.Config {
 	return cfg
 }
 
-func newZipStreamingRouter(t *testing.T, zipData []byte) (http.Handler, config.Config) {
+func newZipStreamingRouter(t *testing.T, zipData []byte) (*Server, http.Handler, config.Config) {
 	t.Helper()
 
 	srv := newZipFixtureServer(t, zipData)
@@ -195,11 +195,11 @@ func newZipStreamingRouter(t *testing.T, zipData []byte) (http.Handler, config.C
 		},
 	}}
 
-	router, err := NewRouter(cfg, filer)
+	server, router, err := newRouter(cfg, filer, nil)
 	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
+		t.Fatalf("newRouter() error = %v", err)
 	}
-	return router, cfg
+	return server, router, cfg
 }
 
 func readResponseZip(t *testing.T, body []byte) *zip.Reader {
@@ -219,7 +219,7 @@ func TestZipEndpointSubpathStreamsDirectory(t *testing.T) {
 		"vasp/INCAR":  zipStore,
 	})
 
-	router, cfg := newZipStreamingRouter(t, zipData)
+	_, router, cfg := newZipStreamingRouter(t, zipData)
 	req := signTestRequest(t, cfg, http.MethodGet, "/zip/"+uploadID+"/vasp", time.Now().UTC(), 15*time.Minute)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -265,7 +265,7 @@ func TestZipEndpointSubpathStreamsSingleFile(t *testing.T) {
 		"vasp/INCAR":  zipStore,
 	})
 
-	router, cfg := newZipStreamingRouter(t, zipData)
+	_, router, cfg := newZipStreamingRouter(t, zipData)
 	req := signTestRequest(t, cfg, http.MethodGet, "/zip/"+uploadID+"/vasp/OUTCAR", time.Now().UTC(), 15*time.Minute)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -298,7 +298,7 @@ func TestZipEndpointSubpathNotFound(t *testing.T) {
 		"input/INCAR": zipDeflate,
 	})
 
-	router, cfg := newZipStreamingRouter(t, zipData)
+	_, router, cfg := newZipStreamingRouter(t, zipData)
 
 	req := signTestRequest(t, cfg, http.MethodGet, "/zip/"+uploadID+"/missing/INCAR", time.Now().UTC(), 15*time.Minute)
 	rec := httptest.NewRecorder()
