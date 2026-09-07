@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/ulikunitz/xz"
 )
 
 func (s *Server) file(w http.ResponseWriter, r *http.Request) {
@@ -111,10 +112,10 @@ func (s *Server) streamFile(w http.ResponseWriter, r *http.Request, obj *zipObje
 	}
 
 	cleanPath := strings.ReplaceAll(strings.Trim(subpath, "/\\"), "\\", "/")
-	decompressGzip := decompress && strings.HasSuffix(cleanPath, ".gz")
+	decompressMember := decompress && isDecompressiblePath(cleanPath)
 
 	src := matched[0]
-	if !decompressGzip && offset > int64(src.UncompressedSize64) {
+	if !decompressMember && offset > int64(src.UncompressedSize64) {
 		http.Error(w, "Invalid offset provided.", http.StatusBadRequest)
 		return
 	}
@@ -126,14 +127,14 @@ func (s *Server) streamFile(w http.ResponseWriter, r *http.Request, obj *zipObje
 	}
 	defer closeMember()
 
-	if decompressGzip {
-		gz, err := gzip.NewReader(source)
+	if decompressMember {
+		decoded, closeDecoded, err := wrapDecompress(source, cleanPath)
 		if err != nil {
-			http.Error(w, "failed to decompress gzip", http.StatusBadRequest)
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		defer gz.Close()
-		source = gz
+		defer closeDecoded()
+		source = decoded
 	}
 
 	if offset > 0 {
@@ -167,6 +168,29 @@ func (s *Server) streamFile(w http.ResponseWriter, r *http.Request, obj *zipObje
 	)
 
 	_, _ = io.Copy(w, output)
+}
+
+func isDecompressiblePath(cleanPath string) bool {
+	return strings.HasSuffix(cleanPath, ".gz") || strings.HasSuffix(cleanPath, ".xz")
+}
+
+func wrapDecompress(source io.Reader, cleanPath string) (io.Reader, func(), error) {
+	switch {
+	case strings.HasSuffix(cleanPath, ".gz"):
+		gz, err := gzip.NewReader(source)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to decompress gzip")
+		}
+		return gz, func() { _ = gz.Close() }, nil
+	case strings.HasSuffix(cleanPath, ".xz"):
+		r, err := xz.NewReader(source)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to decompress xz")
+		}
+		return r, func() {}, nil
+	default:
+		return source, func() {}, nil
+	}
 }
 
 func openZipMember(src *zip.File) (io.Reader, func(), error) {
